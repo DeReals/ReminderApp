@@ -583,7 +583,11 @@ a { color: inherit; text-decoration: none; }
 .study-library-list { display: grid; gap: 7px; }
 .study-library-item { display: flex; align-items: center; gap: 10px; padding: 11px 12px; border: 1px solid #e9ece7; border-radius: 9px; background: #fff; }
 .study-library-schedule { color: #959c95; font-size: 9px; }
+.review-done-button { min-height: 30px; flex: 0 0 auto; padding: 0 9px; border: 1px solid #dce8da; border-radius: 7px; background: #f3f8f1; color: #4e7651; font-size: 9px; font-weight: 600; cursor: pointer; }
+.review-done-button:hover:not(:disabled) { border-color: #b7cdbb; background: #edf5eb; }
+.review-done-button:disabled { opacity: .65; cursor: wait; }
 .study-form-intro { margin: -9px 0 15px; color: #89918b; font-size: 10px; line-height: 1.6; }
+.spaced-plan-note { margin: 8px 0 0; color: #627465; font-size: 9px; line-height: 1.6; }
 .study-reminder-modal textarea { min-height: 75px; }
 .study-form-tip { display: flex; align-items: flex-start; gap: 7px; margin-top: 15px; padding: 10px; border-radius: 7px; background: #f5f6fa; color: #7d86a0; font-size: 9px; line-height: 1.55; }
 .study-form-tip svg { flex: 0 0 auto; margin-top: 1px; }

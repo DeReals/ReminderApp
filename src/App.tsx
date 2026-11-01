@@ -32,6 +32,11 @@ const emptyDraft: TaskDraft = {
 
 const fullDate = new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: 'numeric' })
 const shortDate = new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric' })
+const spacedIntervalsDays = [1, 3, 7, 21, 42, 90, 180, 365]
+
+function getNextSpacedIntervalDays(reviewCount: number) {
+  return spacedIntervalsDays[Math.min(reviewCount, spacedIntervalsDays.length - 1)]
+}
 
 function App() {
   const [session, setSession] = useState<Session | null>(null)
@@ -148,6 +153,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
   const [initialDate, setInitialDate] = useState('')
   const [calendarMonth, setCalendarMonth] = useState(() => new Date())
   const [busyId, setBusyId] = useState('')
+  const [reviewingId, setReviewingId] = useState('')
   const [completionMessage, setCompletionMessage] = useState('')
   const [studyDialogOpen, setStudyDialogOpen] = useState(false)
   const [notificationsEnabled, setNotificationsEnabled] = useState(() => typeof Notification !== 'undefined' && Notification.permission === 'granted')
@@ -221,12 +227,15 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
 
       for (const reminder of studyReminders.filter((item) => item.enabled)) {
         const isOneTime = reminder.schedule_type === 'once'
+        const isSpaced = reminder.schedule_type === 'spaced'
         const scheduledDate = reminder.remind_at ? new Date(reminder.remind_at) : null
         const scheduledTime = reminder.remind_time?.slice(0, 5) ?? '23:59'
-        const isDue = isOneTime
+        const isDue = isSpaced
           ? Boolean(scheduledDate && scheduledDate.getTime() <= now.getTime())
-          : reminder.days_of_week.includes(now.getDay()) && scheduledTime <= currentTime
-        const notificationKey = `${reminder.id}:${today}`
+          : isOneTime
+            ? Boolean(scheduledDate && scheduledDate.getTime() <= now.getTime())
+            : reminder.days_of_week.includes(now.getDay()) && scheduledTime <= currentTime
+        const notificationKey = `${reminder.id}:${isSpaced ? reminder.remind_at : today}`
         if (!isDue || notifiedReminderKeys.current.has(notificationKey)) continue
         const storageKey = `daymark-study-reminder:${session.user.id}:${notificationKey}`
         try {
@@ -267,7 +276,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
   }, [notificationsEnabled, studyReminders, session.user.id, client])
 
   async function saveStudyReminder(draft: StudyReminderDraft) {
-    const schedule = draft.schedule_type === 'once'
+    const schedule = draft.schedule_type !== 'weekly'
       ? {
           remind_at: new Date(`${draft.date}T${draft.time}`).toISOString(),
           remind_time: null,
@@ -301,6 +310,25 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
     else {
       setError('')
       setStudyReminders((current) => current.map((item) => item.id === reminder.id ? { ...item, enabled: !reminder.enabled } : item))
+    }
+  }
+
+  async function markStudyReminderReviewed(reminder: StudyReminder) {
+    const nextReviewCount = reminder.review_count + 1
+    const nextReviewDate = new Date()
+    nextReviewDate.setDate(nextReviewDate.getDate() + getNextSpacedIntervalDays(reminder.review_count))
+    setReviewingId(reminder.id)
+    const { error: updateError } = await client.from('study_reminders').update({
+      remind_at: nextReviewDate.toISOString(),
+      review_count: nextReviewCount,
+    }).eq('id', reminder.id)
+    setReviewingId('')
+    if (updateError) setError(`Could not schedule the next study review: ${updateError.message}`)
+    else {
+      setError('')
+      setStudyReminders((current) => current.map((item) => item.id === reminder.id
+        ? { ...item, remind_at: nextReviewDate.toISOString(), review_count: nextReviewCount }
+        : item))
     }
   }
 
@@ -462,6 +490,8 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
             onAdd={() => setStudyDialogOpen(true)}
             onToggle={(reminder) => void toggleStudyReminder(reminder)}
             onDelete={(reminder) => void deleteStudyReminder(reminder)}
+            onReview={(reminder) => void markStudyReminderReviewed(reminder)}
+            reviewingId={reviewingId}
           /> : <>
           <div className="welcome-row">
             <div><span className="eyebrow"><Sparkles size={14} /> A FRESH START, EVERY DAY</span><h1>{periodTitle}</h1><p>{periodDescription}</p></div>
@@ -512,7 +542,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
   )
 }
 
-function StudyDashboard({ reminders, subjects, loading, notificationsSupported, notificationPermission, notificationsEnabled, onEnableNotifications, onAdd, onToggle, onDelete }: {
+function StudyDashboard({ reminders, subjects, loading, notificationsSupported, notificationPermission, notificationsEnabled, onEnableNotifications, onAdd, onToggle, onDelete, onReview, reviewingId }: {
   reminders: StudyReminder[]
   subjects: string[]
   loading: boolean
@@ -523,6 +553,8 @@ function StudyDashboard({ reminders, subjects, loading, notificationsSupported, 
   onAdd: () => void
   onToggle: (reminder: StudyReminder) => void
   onDelete: (reminder: StudyReminder) => void
+  onReview: (reminder: StudyReminder) => void
+  reviewingId: string
 }) {
   const activeReminders = reminders.filter((reminder) => reminder.enabled)
   const dueCount = activeReminders.filter((reminder) => isReminderDue(reminder, new Date())).length
@@ -533,7 +565,7 @@ function StudyDashboard({ reminders, subjects, loading, notificationsSupported, 
 
   return <div className="study-page">
     <div className="welcome-row study-welcome">
-      <div><span className="eyebrow"><BellRing size={14} /> BUILD A STUDY ROUTINE</span><h1>Study reminders.</h1><p>Schedule regular study sessions for each class. Small, steady reviews help knowledge stick.</p></div>
+      <div><span className="eyebrow"><BellRing size={14} /> BUILD A STUDY ROUTINE</span><h1>Study reminders.</h1><p>Use spaced reviews to revisit class topics over time and help them stick in long-term memory.</p></div>
       <button className="button button-primary add-task-button" onClick={onAdd}><Plus size={18} /> Schedule study</button>
     </div>
 
@@ -543,7 +575,7 @@ function StudyDashboard({ reminders, subjects, loading, notificationsSupported, 
       <article className="study-stat-card"><span className="study-stat-icon"><Clock3 size={17} /></span><span className="study-stat-label">UP NEXT</span><strong className="study-next-time">{nextReminder ? new Intl.DateTimeFormat('en', { weekday: 'short', hour: 'numeric', minute: '2-digit' }).format(nextReminder.next) : '—'}</strong><span>{nextReminder?.reminder.subject ?? 'Schedule a session to begin'}</span></article>
     </section>
 
-    <section className="study-how"><span className="study-how-icon"><Sparkles size={16} /></span><p><strong>Make it stick:</strong> Set a short study session for each class and spread sessions across the week. Come back to important material after a day, a few days, and then a week instead of cramming everything at once.</p></section>
+    <section className="study-how"><span className="study-how-icon"><Sparkles size={16} /></span><p><strong>Make it stick:</strong> Choose spaced repetition for a topic. After each review, Daymark schedules the next one after 1 day, 3 days, 1 week, 3 weeks, and then gradually longer intervals. Mark each session reviewed to advance the schedule.</p></section>
 
     <section className="study-reminder">
       <div className="study-reminder-copy"><span className="study-reminder-icon"><Bell size={17} /></span><div><strong>Browser notifications</strong><p>Allow notifications so Daymark can nudge you at the scheduled study time.</p></div></div>
@@ -556,21 +588,29 @@ function StudyDashboard({ reminders, subjects, loading, notificationsSupported, 
     </section>
 
     <section className="study-library">
-      <div className="study-section-heading"><div><span className="chart-eyebrow">YOUR ROUTINE</span><h2>Upcoming study sessions</h2><p>One-time plans and weekly reminders for your classes.</p></div><span className="study-library-count">{activeReminders.length} active</span></div>
+      <div className="study-section-heading"><div><span className="chart-eyebrow">YOUR ROUTINE</span><h2>Upcoming study sessions</h2><p>One-time plans, weekly reminders, and spaced reviews.</p></div><span className="study-library-count">{activeReminders.length} active</span></div>
       {loading ? <div className="study-empty"><span className="loader" /> Loading your study schedule…</div>
-        : reminders.length ? <div className="study-library-list">{reminders.map((reminder) => <StudyReminderRow key={reminder.id} reminder={reminder} onToggle={() => onToggle(reminder)} onDelete={() => onDelete(reminder)} />)}</div>
-          : <div className="study-empty"><span className="study-empty-icon"><BookOpen size={21} /></span><h3>Give your classes a place in your week.</h3><p>Schedule a one-time study session or set a weekly reminder for each class. Your plans will stay here across devices.</p><button className="button button-secondary" onClick={onAdd}><Plus size={16} /> Schedule your first study session</button></div>}
+        : reminders.length ? <div className="study-library-list">{reminders.map((reminder) => <StudyReminderRow key={reminder.id} reminder={reminder} onToggle={() => onToggle(reminder)} onDelete={() => onDelete(reminder)} onReview={() => onReview(reminder)} reviewing={reviewingId === reminder.id} />)}</div>
+          : <div className="study-empty"><span className="study-empty-icon"><BookOpen size={21} /></span><h3>Give your classes a place in your week.</h3><p>Schedule a one-time session, a weekly reminder, or a spaced review plan. Your plans will stay here across devices.</p><button className="button button-secondary" onClick={onAdd}><Plus size={16} /> Schedule your first study session</button></div>}
     </section>
   </div>
 }
 
-function StudyReminderRow({ reminder, onToggle, onDelete }: { reminder: StudyReminder; onToggle: () => void; onDelete: () => void }) {
-  const schedule = reminder.schedule_type === 'once' && reminder.remind_at
+function StudyReminderRow({ reminder, onToggle, onDelete, onReview, reviewing }: { reminder: StudyReminder; onToggle: () => void; onDelete: () => void; onReview: () => void; reviewing: boolean }) {
+  const schedule = reminder.schedule_type !== 'weekly' && reminder.remind_at
     ? new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(reminder.remind_at))
     : `${reminder.days_of_week.map((day) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][day]).join(', ')} · ${formatTime(reminder.remind_time ?? '18:00')}`
+  const due = isReminderDue(reminder, new Date())
+  const intervalDays = getNextSpacedIntervalDays(reminder.review_count)
+  const scheduleLabel = reminder.schedule_type === 'weekly'
+    ? `Weekly · ${schedule}`
+    : reminder.schedule_type === 'spaced'
+      ? `Spaced review ${reminder.review_count + 1} · ${due ? 'Due now' : schedule} · next interval ${intervalDays} ${intervalDays === 1 ? 'day' : 'days'}`
+      : `One time · ${schedule}`
   return <article className={`study-library-item ${reminder.enabled ? '' : 'reminder-paused'}`}>
     <span className="study-reminder-row-icon"><BookOpen size={16} /></span>
-    <div className="study-reminder-row-main"><span className="study-subject-chip">{reminder.subject}</span><strong>{reminder.topic || 'Study session'}</strong><span className="study-library-schedule">{reminder.schedule_type === 'weekly' ? 'Weekly' : 'One time'} · {schedule}</span></div>
+    <div className="study-reminder-row-main"><span className="study-subject-chip">{reminder.subject}</span><strong>{reminder.topic || 'Study session'}</strong><span className="study-library-schedule">{scheduleLabel}</span></div>
+    {reminder.schedule_type === 'spaced' && reminder.enabled && due && <button className="review-done-button" onClick={onReview} disabled={reviewing}>{reviewing ? 'Saving…' : 'Mark reviewed'}</button>}
     <button className={`reminder-toggle ${reminder.enabled ? 'on' : ''}`} onClick={onToggle} aria-label={`${reminder.enabled ? 'Pause' : 'Resume'} ${reminder.subject} study reminder`} aria-pressed={reminder.enabled}><span /></button>
     <button className="delete-study-reminder" aria-label={`Delete ${reminder.subject} study reminder`} onClick={onDelete}><X size={16} /></button>
   </article>
@@ -580,7 +620,7 @@ function StudyReminderDialog({ onClose, onSave }: {
   onClose: () => void
   onSave: (draft: StudyReminderDraft) => Promise<boolean>
 }) {
-  const [scheduleType, setScheduleType] = useState<'once' | 'weekly'>('weekly')
+  const [scheduleType, setScheduleType] = useState<'once' | 'weekly' | 'spaced'>('weekly')
   const [subject, setSubject] = useState('')
   const [topic, setTopic] = useState('')
   const [date, setDate] = useState(localDateKey(new Date()))
@@ -599,8 +639,8 @@ function StudyReminderDialog({ onClose, onSave }: {
       setFormError('Choose at least one day for your weekly study reminder.')
       return
     }
-    if (scheduleType === 'once' && new Date(`${date}T${time}`).getTime() <= Date.now()) {
-      setFormError('Choose a study time in the future.')
+    if (scheduleType !== 'weekly' && new Date(`${date}T${time}`).getTime() <= Date.now()) {
+      setFormError('Choose a first study time in the future.')
       return
     }
     setFormError('')
@@ -612,16 +652,17 @@ function StudyReminderDialog({ onClose, onSave }: {
 
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><form className="task-modal study-reminder-modal" onSubmit={(event) => void submit(event)}>
     <div className="modal-heading"><div><span className="eyebrow"><BellRing size={13} /> MAKE TIME TO REMEMBER</span><h2>Schedule study time</h2></div><button type="button" className="icon-button" aria-label="Close dialog" onClick={onClose}><X size={18} /></button></div>
-    <p className="study-form-intro">Plan focused study sessions for your classes. Pick a one-time session or a weekly routine.</p>
+    <p className="study-form-intro">Plan focused study sessions for your classes. Choose a weekly routine, a one-time session, or a spaced review plan.</p>
     <label>Class or subject<input autoFocus value={subject} onChange={(event) => setSubject(event.target.value)} placeholder="e.g. Biology, World History" maxLength={60} required /></label>
     <label>What will you study? <span className="optional-label">OPTIONAL</span><input value={topic} onChange={(event) => setTopic(event.target.value)} placeholder="e.g. Review chapter 4 for Friday’s quiz" maxLength={160} /></label>
-    <label>Repeat<select value={scheduleType} onChange={(event) => setScheduleType(event.target.value as 'once' | 'weekly')}><option value="weekly">Every week</option><option value="once">One time</option></select></label>
+    <label>Study plan<select value={scheduleType} onChange={(event) => setScheduleType(event.target.value as 'once' | 'weekly' | 'spaced')}><option value="weekly">Every week</option><option value="once">One time</option><option value="spaced">Spaced repetition</option></select></label>
     {scheduleType === 'weekly' && <fieldset className="study-day-picker"><legend>Study on</legend>{[['M', 1], ['T', 2], ['W', 3], ['T', 4], ['F', 5], ['S', 6], ['S', 0]].map(([label, day], index) => <button key={`${day}-${index}`} type="button" className={days.includes(Number(day)) ? 'study-day selected' : 'study-day'} aria-pressed={days.includes(Number(day))} onClick={() => toggleDay(Number(day))}>{label}</button>)}</fieldset>}
     {scheduleType === 'weekly'
       ? <label>Reminder time<input type="time" value={time} onChange={(event) => setTime(event.target.value)} required /></label>
       : <div className="form-row"><label>Date<input type="date" min={localDateKey(new Date())} value={date} onChange={(event) => setDate(event.target.value)} required /></label><label>Time<input type="time" value={time} onChange={(event) => setTime(event.target.value)} required /></label></div>}
+    {scheduleType === 'spaced' && <p className="spaced-plan-note">Your first review starts on this date. Mark it reviewed to schedule follow-ups at 1 day, 3 days, 1 week, 3 weeks, and longer intervals.</p>}
     {formError && <p className="form-error" role="alert">{formError}</p>}
-    <div className="study-form-tip"><Sparkles size={14} /><span>Short, repeated sessions are easier to stick with than last-minute cramming.</span></div>
+    <div className="study-form-tip"><Sparkles size={14} /><span>{scheduleType === 'spaced' ? 'After each review, mark it complete and Daymark will automatically schedule the next interval.' : 'Short, repeated sessions are easier to stick with than last-minute cramming.'}</span></div>
     <div className="modal-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={busy}>{busy ? 'Saving…' : 'Save study reminder'} <ArrowRight size={16} /></button></div>
   </form></div>
 }
@@ -633,7 +674,7 @@ function formatTime(value: string) {
 
 function isReminderDue(reminder: StudyReminder, now: Date) {
   if (!reminder.enabled) return false
-  if (reminder.schedule_type === 'once') return Boolean(reminder.remind_at && new Date(reminder.remind_at).getTime() <= now.getTime())
+  if (reminder.schedule_type !== 'weekly') return Boolean(reminder.remind_at && new Date(reminder.remind_at).getTime() <= now.getTime())
   const time = reminder.remind_time?.slice(0, 5) ?? '23:59'
   const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
   return reminder.days_of_week.includes(now.getDay()) && currentTime >= time
@@ -641,7 +682,7 @@ function isReminderDue(reminder: StudyReminder, now: Date) {
 
 function getNextReminderDate(reminder: StudyReminder, now: Date): Date | null {
   if (!reminder.enabled) return null
-  if (reminder.schedule_type === 'once') {
+  if (reminder.schedule_type !== 'weekly') {
     const date = reminder.remind_at ? new Date(reminder.remind_at) : null
     return date && date > now ? date : null
   }

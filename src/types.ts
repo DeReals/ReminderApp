@@ -25,10 +25,11 @@ export type StudyReminder = {
   user_id: string
   subject: string
   topic: string
-  schedule_type: 'once' | 'weekly'
+  schedule_type: 'once' | 'weekly' | 'spaced'
   remind_at: string | null
   remind_time: string | null
   days_of_week: number[]
+  review_count: number
   enabled: boolean
   created_at: string
 }
@@ -36,7 +37,7 @@ export type StudyReminder = {
 export type StudyReminderDraft = {
   subject: string
   topic: string
-  schedule_type: 'once' | 'weekly'
+  schedule_type: 'once' | 'weekly' | 'spaced'
   date: string
   time: string
   days_of_week: number[]
