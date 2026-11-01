@@ -11,16 +11,18 @@ import {
   CheckCheck,
   ChevronDown,
   Clock3,
+  Flame,
   LayoutList,
   LogOut,
   Plus,
+  ShieldCheck,
   Search,
   SlidersHorizontal,
   Sparkles,
   X,
 } from 'lucide-react'
 import { supabase } from './lib/supabase'
-import type { Priority, StudyReminder, StudyReminderDraft, Task, TaskDraft } from './types'
+import type { DisciplineHabit, DisciplineHabitDraft, DisciplineLog, Priority, StudyReminder, StudyReminderDraft, Task, TaskDraft } from './types'
 
 const emptyDraft: TaskDraft = {
   title: '',
@@ -72,7 +74,7 @@ function SetupScreen() {
         <div className="setup-steps">
           <div><span>1</span><p>Create a Supabase project and copy <code>.env.example</code> to <code>.env</code>, or use the supported <code>NEXT_PUBLIC_SUPABASE_*</code> names.</p></div>
           <div><span>2</span><p>Add your project URL and anon/publishable key to <code>.env</code>.</p></div>
-          <div><span>3</span><p>Run the tasks and study-reminders SQL migrations listed in <code>README.md</code> in your Supabase SQL Editor.</p></div>
+          <div><span>3</span><p>Run the Supabase SQL migrations listed in <code>README.md</code>, in order, in your SQL Editor.</p></div>
           <div><span>4</span><p>Restart the dev server and create your account.</p></div>
         </div>
         <p className="setup-note">Your Supabase anon key is safe to use in a browser when Row Level Security is enabled. Never add a service role key here.</p>
@@ -135,15 +137,18 @@ function AuthScreen({ client }: { client: SupabaseClient }) {
 
 type View = 'list' | 'calendar'
 type Filter = 'all' | 'today' | 'week' | 'month' | 'completed'
-type DashboardMode = 'tasks' | 'study'
+type DashboardMode = 'today' | 'tasks' | 'study' | 'discipline'
 
 function Dashboard({ client, session }: { client: SupabaseClient; session: Session }) {
   const [tasks, setTasks] = useState<Task[]>([])
   const [studyReminders, setStudyReminders] = useState<StudyReminder[]>([])
+  const [disciplineHabits, setDisciplineHabits] = useState<DisciplineHabit[]>([])
+  const [disciplineLogs, setDisciplineLogs] = useState<DisciplineLog[]>([])
   const [loading, setLoading] = useState(true)
   const [studyLoading, setStudyLoading] = useState(true)
+  const [disciplineLoading, setDisciplineLoading] = useState(true)
   const [error, setError] = useState('')
-  const [mode, setMode] = useState<DashboardMode>('tasks')
+  const [mode, setMode] = useState<DashboardMode>('today')
   const [filter, setFilter] = useState<Filter>('all')
   const [priorityFilter, setPriorityFilter] = useState<'all' | Priority>('all')
   const [view, setView] = useState<View>('list')
@@ -156,6 +161,8 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
   const [reviewingId, setReviewingId] = useState('')
   const [completionMessage, setCompletionMessage] = useState('')
   const [studyDialogOpen, setStudyDialogOpen] = useState(false)
+  const [disciplineDialogOpen, setDisciplineDialogOpen] = useState(false)
+  const [disciplineBusyId, setDisciplineBusyId] = useState('')
   const [notificationsEnabled, setNotificationsEnabled] = useState(() => typeof Notification !== 'undefined' && Notification.permission === 'granted')
   const notifiedReminderKeys = useRef(new Set<string>())
   const today = new Date()
@@ -189,9 +196,25 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
     setStudyLoading(false)
   }
 
+  async function loadDisciplineData() {
+    setDisciplineLoading(true)
+    const earliest = new Date()
+    earliest.setDate(earliest.getDate() - 365)
+    const [habitsResult, logsResult] = await Promise.all([
+      client.from('discipline_habits').select('*').order('created_at', { ascending: true }),
+      client.from('discipline_logs').select('*').gte('completed_on', localDateKey(earliest)),
+    ])
+    if (habitsResult.error) setError(`Could not load discipline commitments: ${habitsResult.error.message}`)
+    else setDisciplineHabits(habitsResult.data as DisciplineHabit[])
+    if (logsResult.error) setError(`Could not load discipline check-ins: ${logsResult.error.message}`)
+    else setDisciplineLogs(logsResult.data as DisciplineLog[])
+    setDisciplineLoading(false)
+  }
+
   useEffect(() => {
     void loadTasks()
     void loadStudyReminders()
+    void loadDisciplineData()
   }, [client])
 
   const activeStudyReminders = studyReminders.filter((reminder) => reminder.enabled)
@@ -214,7 +237,9 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
   }
 
   useEffect(() => {
-    if (!notificationsEnabled || !studyReminders.some((reminder) => reminder.enabled) || !('Notification' in window)) return
+    const hasScheduledNudges = studyReminders.some((reminder) => reminder.enabled)
+      || disciplineHabits.some((habit) => habit.active && habit.cue_time)
+    if (!notificationsEnabled || !hasScheduledNudges || !('Notification' in window)) return
 
     const checkReminder = () => {
       if (Notification.permission !== 'granted') {
@@ -268,12 +293,42 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
           })
         }
       }
+
+      for (const habit of disciplineHabits.filter((item) => item.active && item.cue_time && item.days_of_week.includes(now.getDay()))) {
+        const cueTime = habit.cue_time?.slice(0, 5) ?? '23:59'
+        const notificationKey = `discipline:${habit.id}:${today}`
+        if (cueTime > currentTime || disciplineLogs.some((log) => log.habit_id === habit.id && log.completed_on === today) || notifiedReminderKeys.current.has(notificationKey)) continue
+        const storageKey = `daymark-discipline-cue:${session.user.id}:${notificationKey}`
+        try {
+          if (window.localStorage.getItem(storageKey)) {
+            notifiedReminderKeys.current.add(notificationKey)
+            continue
+          }
+        } catch (storageError) {
+          console.error('Could not read discipline notification state:', storageError)
+        }
+        notifiedReminderKeys.current.add(notificationKey)
+        try {
+          window.localStorage.setItem(storageKey, 'true')
+        } catch (storageError) {
+          console.error('Could not save discipline notification state:', storageError)
+        }
+        const notification = new Notification(`Time for your commitment: ${habit.title}`, {
+          body: `Keep it small: ${habit.minimum_action}`,
+          tag: `daymark-${notificationKey}`,
+        })
+        notification.onclick = () => {
+          window.focus()
+          setMode('discipline')
+          notification.close()
+        }
+      }
     }
 
     checkReminder()
     const intervalId = window.setInterval(checkReminder, 15_000)
     return () => window.clearInterval(intervalId)
-  }, [notificationsEnabled, studyReminders, session.user.id, client])
+  }, [notificationsEnabled, studyReminders, disciplineHabits, disciplineLogs, session.user.id, client])
 
   async function saveStudyReminder(draft: StudyReminderDraft) {
     const schedule = draft.schedule_type !== 'weekly'
@@ -340,6 +395,64 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
       setError('')
       await loadStudyReminders()
     }
+  }
+
+  async function saveDisciplineHabit(draft: DisciplineHabitDraft) {
+    const { error: saveError } = await client.from('discipline_habits').insert({
+      user_id: session.user.id,
+      title: draft.title.trim(),
+      minimum_action: draft.minimum_action.trim(),
+      days_of_week: draft.days_of_week,
+      cue_time: draft.cue_time || null,
+    })
+    if (saveError) {
+      setError(`Could not save discipline commitment: ${saveError.message}`)
+      return false
+    }
+    setError('')
+    await loadDisciplineData()
+    setDisciplineDialogOpen(false)
+    return true
+  }
+
+  async function toggleDisciplineLog(habit: DisciplineHabit) {
+    const todayLog = disciplineLogs.find((log) => log.habit_id === habit.id && log.completed_on === todayKey)
+    setDisciplineBusyId(habit.id)
+    const result = todayLog
+      ? await client.from('discipline_logs').delete().eq('id', todayLog.id)
+      : await client.from('discipline_logs').insert({ user_id: session.user.id, habit_id: habit.id, completed_on: todayKey }).select().single()
+    setDisciplineBusyId('')
+    if (result.error) {
+      setError(`Could not update your daily check-in: ${result.error.message}`)
+      return
+    }
+    setError('')
+    setDisciplineLogs((current) => todayLog
+      ? current.filter((log) => log.id !== todayLog.id)
+      : [...current, result.data as DisciplineLog])
+  }
+
+  async function toggleDisciplineHabit(habit: DisciplineHabit) {
+    const { error: updateError } = await client.from('discipline_habits').update({ active: !habit.active }).eq('id', habit.id)
+    if (updateError) setError(`Could not update commitment: ${updateError.message}`)
+    else {
+      setError('')
+      setDisciplineHabits((current) => current.map((item) => item.id === habit.id ? { ...item, active: !item.active } : item))
+    }
+  }
+
+  async function deleteDisciplineHabit(habit: DisciplineHabit) {
+    if (!window.confirm(`Delete "${habit.title}" and its check-in history? This can't be undone.`)) return
+    setDisciplineBusyId(habit.id)
+    const { error: deleteError } = await client.from('discipline_habits').delete().eq('id', habit.id)
+    setDisciplineBusyId('')
+    if (deleteError) {
+      setError(`Could not delete commitment: ${deleteError.message}`)
+      return
+    }
+    setError('')
+    setDisciplineHabits((current) => current.filter((item) => item.id !== habit.id))
+    setDisciplineLogs((current) => current.filter((log) => log.habit_id !== habit.id))
   }
 
   const filteredTasks = useMemo(() => tasks.filter((task) => {
@@ -450,6 +563,22 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
       : filter === 'month'
         ? monthTasks.length ? `${monthTasks.length} ${monthTasks.length === 1 ? 'task' : 'tasks'} due this month. Plenty of time to make a plan.` : 'A clear month ahead. Add a task whenever you need.'
         : `${pendingCount ? `You've got ${pendingCount} ${pendingCount === 1 ? 'thing' : 'things'} on your list. One step at a time.` : 'A little space to start fresh.'}`
+  const dayTasks = tasks.filter((task) => {
+    const dueDate = task.due_at ? localDateKey(new Date(task.due_at)) : ''
+    const completedToday = task.completed_at && localDateKey(new Date(task.completed_at)) === todayKey
+    return (dueDate && dueDate <= todayKey && !task.completed_at) || completedToday
+  }).sort((a, b) => {
+    if (Boolean(a.completed_at) !== Boolean(b.completed_at)) return a.completed_at ? 1 : -1
+    return (a.due_at ?? '').localeCompare(b.due_at ?? '')
+  })
+  const todayWeekday = today.getDay()
+  const dayStudyReminders = activeStudyReminders.filter((reminder) =>
+    reminder.schedule_type === 'weekly'
+      ? reminder.days_of_week.includes(todayWeekday)
+      : Boolean(reminder.remind_at && localDateKey(new Date(reminder.remind_at)) <= todayKey),
+  )
+  const dayDisciplineHabits = disciplineHabits.filter((habit) => habit.active && habit.days_of_week.includes(todayWeekday))
+  const dayDisciplineLogs = disciplineLogs.filter((log) => log.completed_on === todayKey)
 
   return (
     <div className="app-shell">
@@ -457,12 +586,14 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
         <a className="brand" href="#"><span className="brand-mark"><Check size={18} /></span> daymark</a>
         <div className="sidebar-label">YOUR SPACE</div>
         <nav className="side-nav">
+          <button className={mode === 'today' ? 'nav-item active' : 'nav-item'} onClick={() => setMode('today')}><CalendarDays size={18} /><span>My day</span><span className="nav-count">{dayTasks.filter((task) => !task.completed_at).length + dayDisciplineHabits.filter((habit) => !dayDisciplineLogs.some((log) => log.habit_id === habit.id)).length}</span></button>
           <button className={mode === 'tasks' && filter === 'all' ? 'nav-item active' : 'nav-item'} onClick={() => { setMode('tasks'); setFilter('all') }}><LayoutList size={18} /><span>All tasks</span><span className="nav-count">{pendingCount}</span></button>
           <button className={mode === 'tasks' && filter === 'today' ? 'nav-item active' : 'nav-item'} onClick={() => { setMode('tasks'); setFilter('today') }}><Clock3 size={18} /><span>Today</span><span className="nav-count">{todayCount}</span></button>
           <button className={mode === 'tasks' && filter === 'week' ? 'nav-item active' : 'nav-item'} onClick={() => { setMode('tasks'); setFilter('week') }}><CalendarDays size={18} /><span>This week</span><span className="nav-count">{weekTasks.length}</span></button>
           <button className={mode === 'tasks' && filter === 'month' ? 'nav-item active' : 'nav-item'} onClick={() => { setMode('tasks'); setFilter('month') }}><CalendarDays size={18} /><span>This month</span><span className="nav-count">{monthTasks.length}</span></button>
           <button className={mode === 'tasks' && filter === 'completed' ? 'nav-item active' : 'nav-item'} onClick={() => { setMode('tasks'); setFilter('completed') }}><CheckCheck size={18} /><span>Completed</span>{completedCount > 0 && <span className="nav-count">{completedCount}</span>}</button>
           <button className={mode === 'study' ? 'nav-item active' : 'nav-item'} onClick={() => setMode('study')}><BookOpen size={18} /><span>Study reminders</span>{activeStudyReminders.length > 0 && <span className="nav-count">{activeStudyReminders.length}</span>}</button>
+          <button className={mode === 'discipline' ? 'nav-item active' : 'nav-item'} onClick={() => setMode('discipline')}><ShieldCheck size={18} /><span>Discipline coach</span></button>
         </nav>
         <div className="sidebar-bottom">
           <div className="sidebar-quote"><Sparkles size={15} /><p>Progress, not perfection. You're doing just fine.</p></div>
@@ -472,14 +603,35 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
 
       <main className="main-content">
         <header className="topbar">
-          <div className="mobile-brand"><a className="brand" href="#"><span className="brand-mark"><Check size={18} /></span> daymark</a><div className="mobile-actions"><button aria-label="Study reminders" className={`icon-button ${mode === 'study' ? 'selected' : ''}`} onClick={() => setMode(mode === 'study' ? 'tasks' : 'study')}><BookOpen size={17} /></button><button aria-label="Sign out" className="icon-button" onClick={() => void client.auth.signOut()}><LogOut size={17} /></button></div></div>
-          <div className="breadcrumb"><span>My space</span><span className="breadcrumb-slash">/</span><strong>{mode === 'study' ? 'Study reminders' : view === 'calendar' ? 'Calendar' : filterTitle}</strong></div>
+          <div className="mobile-brand"><a className="brand" href="#"><span className="brand-mark"><Check size={18} /></span> daymark</a><div className="mobile-actions"><button aria-label="My day" className={`icon-button ${mode === 'today' ? 'selected' : ''}`} onClick={() => setMode('today')}><CalendarDays size={17} /></button><button aria-label="Study reminders" className={`icon-button ${mode === 'study' ? 'selected' : ''}`} onClick={() => setMode(mode === 'study' ? 'today' : 'study')}><BookOpen size={17} /></button><button aria-label="Discipline coach" className={`icon-button ${mode === 'discipline' ? 'selected' : ''}`} onClick={() => setMode(mode === 'discipline' ? 'today' : 'discipline')}><ShieldCheck size={17} /></button><button aria-label="Sign out" className="icon-button" onClick={() => void client.auth.signOut()}><LogOut size={17} /></button></div></div>
+          <div className="breadcrumb"><span>My space</span><span className="breadcrumb-slash">/</span><strong>{mode === 'study' ? 'Study reminders' : mode === 'discipline' ? 'Discipline coach' : mode === 'today' ? 'My day' : view === 'calendar' ? 'Calendar' : filterTitle}</strong></div>
           <div className="topbar-date">{fullDate.format(today)}</div>
         </header>
 
         <section className="page-content">
           {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')} aria-label="Dismiss error"><X size={16} /></button></div>}
-          {mode === 'study' ? <StudyDashboard
+          {mode === 'today' ? <MyDayDashboard
+            date={today}
+            todayKey={todayKey}
+            tasks={dayTasks}
+            studyReminders={dayStudyReminders}
+            disciplineHabits={dayDisciplineHabits}
+            disciplineLogs={dayDisciplineLogs}
+            loading={loading || studyLoading || disciplineLoading}
+            busyTaskId={busyId}
+            busyDisciplineId={disciplineBusyId}
+            reviewingId={reviewingId}
+            onToggleTask={(task) => void toggleTask(task)}
+            onOpenTask={(task) => { setEditing(task); setDialogOpen(true) }}
+            onAddTask={() => openNewTask()}
+            onOpenTasks={() => { setMode('tasks'); setFilter('all') }}
+            onAddStudy={() => { setMode('study'); setStudyDialogOpen(true) }}
+            onOpenStudy={() => setMode('study')}
+            onReview={(reminder) => void markStudyReminderReviewed(reminder)}
+            onToggleDiscipline={(habit) => void toggleDisciplineLog(habit)}
+            onAddDiscipline={() => { setMode('discipline'); setDisciplineDialogOpen(true) }}
+            onOpenDiscipline={() => setMode('discipline')}
+          /> : mode === 'study' ? <StudyDashboard
             reminders={studyReminders}
             subjects={subjects}
             loading={studyLoading}
@@ -492,6 +644,20 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
             onDelete={(reminder) => void deleteStudyReminder(reminder)}
             onReview={(reminder) => void markStudyReminderReviewed(reminder)}
             reviewingId={reviewingId}
+          /> : mode === 'discipline' ? <DisciplineDashboard
+            habits={disciplineHabits}
+            logs={disciplineLogs}
+            loading={disciplineLoading}
+            todayKey={todayKey}
+            notificationsSupported={'Notification' in window}
+            notificationPermission={('Notification' in window) ? Notification.permission : 'unsupported'}
+            notificationsEnabled={notificationsEnabled}
+            onEnableNotifications={() => void enableStudyNotifications()}
+            onAdd={() => setDisciplineDialogOpen(true)}
+            onToggleLog={(habit) => void toggleDisciplineLog(habit)}
+            onToggleHabit={(habit) => void toggleDisciplineHabit(habit)}
+            onDeleteHabit={(habit) => void deleteDisciplineHabit(habit)}
+            busyId={disciplineBusyId}
           /> : <>
           <div className="welcome-row">
             <div><span className="eyebrow"><Sparkles size={14} /> A FRESH START, EVERY DAY</span><h1>{periodTitle}</h1><p>{periodDescription}</p></div>
@@ -538,8 +704,127 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
       </main>
       {dialogOpen && <TaskDialog task={editing} initialDate={initialDate} onClose={() => { setDialogOpen(false); setEditing(null); setInitialDate('') }} onSave={saveTask} />}
       {studyDialogOpen && <StudyReminderDialog onClose={() => setStudyDialogOpen(false)} onSave={saveStudyReminder} />}
+      {disciplineDialogOpen && <DisciplineHabitDialog onClose={() => setDisciplineDialogOpen(false)} onSave={saveDisciplineHabit} />}
     </div>
   )
+}
+
+function MyDayDashboard({ date, todayKey, tasks, studyReminders, disciplineHabits, disciplineLogs, loading, busyTaskId, busyDisciplineId, reviewingId, onToggleTask, onOpenTask, onAddTask, onOpenTasks, onAddStudy, onOpenStudy, onReview, onToggleDiscipline, onAddDiscipline, onOpenDiscipline }: {
+  date: Date
+  todayKey: string
+  tasks: Task[]
+  studyReminders: StudyReminder[]
+  disciplineHabits: DisciplineHabit[]
+  disciplineLogs: DisciplineLog[]
+  loading: boolean
+  busyTaskId: string
+  busyDisciplineId: string
+  reviewingId: string
+  onToggleTask: (task: Task) => void
+  onOpenTask: (task: Task) => void
+  onAddTask: () => void
+  onOpenTasks: () => void
+  onAddStudy: () => void
+  onOpenStudy: () => void
+  onReview: (reminder: StudyReminder) => void
+  onToggleDiscipline: (habit: DisciplineHabit) => void
+  onAddDiscipline: () => void
+  onOpenDiscipline: () => void
+}) {
+  const completedTasks = tasks.filter((task) => task.completed_at)
+  const completedHabits = disciplineHabits.filter((habit) => disciplineLogs.some((log) => log.habit_id === habit.id))
+  const totalActions = tasks.length + disciplineHabits.length
+  const completedActions = completedTasks.length + completedHabits.length
+  const progress = totalActions ? Math.round(completedActions / totalActions * 100) : 0
+  const circumference = 2 * Math.PI * 39
+  const offset = circumference * (1 - progress / 100)
+  const overdueCount = tasks.filter((task) => !task.completed_at && task.due_at && localDateKey(new Date(task.due_at)) < todayKey).length
+  const greeting = date.getHours() < 12 ? 'Good morning' : date.getHours() < 17 ? 'Good afternoon' : 'Good evening'
+
+  function reminderTime(reminder: StudyReminder) {
+    if (reminder.schedule_type === 'weekly') return formatTime(reminder.remind_time ?? '18:00')
+    return reminder.remind_at
+      ? new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(new Date(reminder.remind_at))
+      : 'Scheduled today'
+  }
+
+  return <div className="my-day-page">
+    <div className="welcome-row my-day-welcome">
+      <div><span className="eyebrow"><Sparkles size={14} /> YOUR WHOLE DAY, IN ONE PLACE</span><h1>{greeting}. This is your day.</h1><p><span className="my-day-date-pill"><CalendarDays size={13} />{fullDate.format(date)}</span><span className="my-day-welcome-note">A clear view of what matters, with room to take it one step at a time.</span></p></div>
+      <button className="button button-primary add-task-button" onClick={onAddTask}><Plus size={18} /> Add a task</button>
+    </div>
+    <section className="my-day-overview">
+      <div className="my-day-progress-visual">
+        <svg viewBox="0 0 100 100" role="img" aria-label={`${progress}% of today's tasks and commitments complete`}>
+          <defs><linearGradient id="my-day-progress-gradient" x1="0" x2="1" y1="0" y2="1"><stop offset="0%" stopColor="#8fb493" /><stop offset="100%" stopColor="#477650" /></linearGradient></defs>
+          <circle cx="50" cy="50" r="39" className="my-day-ring-track" />
+          <circle cx="50" cy="50" r="39" className="my-day-ring-progress" strokeDasharray={circumference} strokeDashoffset={offset} />
+        </svg>
+        <div><strong>{progress}%</strong><span>done</span></div>
+      </div>
+      <div className="my-day-overview-copy">
+        <span className="my-day-overview-eyebrow">{totalActions === 0 ? 'FRESH PAGE' : completedActions === totalActions ? 'YOU SHOWED UP' : `${totalActions - completedActions} SMALL ${totalActions - completedActions === 1 ? 'STEP' : 'STEPS'} LEFT`}</span>
+        <h2>{totalActions === 0 ? 'A little room to choose what matters.' : completedActions === totalActions ? 'You kept your promises today.' : 'Progress, not pressure.'}</h2>
+        <p>{totalActions === 0 ? 'Your schedule is clear. Add a task or commitment when you’re ready.' : `${completedActions} of ${totalActions} tasks and discipline commitments complete. Study sessions are shown below so you can keep your learning on track too.`}</p>
+        <div className="my-day-category-stats">
+          <div><span className="my-day-dot task-dot" /><strong>{tasks.filter((task) => !task.completed_at).length}</strong><span>tasks left</span></div>
+          <div><span className="my-day-dot study-dot" /><strong>{studyReminders.length}</strong><span>study sessions</span></div>
+          <div><span className="my-day-dot discipline-dot" /><strong>{disciplineHabits.length - completedHabits.length}</strong><span>commitments left</span></div>
+          {overdueCount > 0 && <span className="my-day-overdue">{overdueCount} overdue</span>}
+        </div>
+      </div>
+      <div className="my-day-progress-bars" aria-label="Progress by area">
+        <div><span><i className="task-dot" /> Tasks</span><strong>{tasks.filter((task) => task.completed_at).length}/{tasks.length}</strong><div><i style={{ width: `${tasks.length ? tasks.filter((task) => task.completed_at).length / tasks.length * 100 : 0}%` }} /></div></div>
+        <div><span><i className="discipline-dot" /> Discipline</span><strong>{completedHabits.length}/{disciplineHabits.length}</strong><div><i style={{ width: `${disciplineHabits.length ? completedHabits.length / disciplineHabits.length * 100 : 0}%` }} /></div></div>
+        <div><span><i className="study-dot" /> Study sessions</span><strong>{studyReminders.length} planned</strong><button onClick={onOpenStudy}>View study schedule</button></div>
+      </div>
+    </section>
+    {loading ? <div className="my-day-loading"><span className="loader" /> Gathering your day…</div> : <div className="my-day-grid">
+      <section className="my-day-section my-day-tasks">
+        <div className="my-day-section-heading"><div><span className="my-day-section-icon task-icon"><CheckCheck size={16} /></span><div><h2>Tasks</h2><p>Due today and anything overdue</p></div><span className="my-day-section-count">{tasks.filter((task) => !task.completed_at).length}</span></div><button onClick={onAddTask}><Plus size={15} /> Add</button></div>
+        {tasks.length ? <div className="my-day-item-list">{tasks.map((task) => {
+          const overdue = Boolean(!task.completed_at && task.due_at && localDateKey(new Date(task.due_at)) < todayKey)
+          return <article className={`my-day-item ${task.completed_at ? 'item-complete' : ''}`} key={task.id}>
+            <button className={`my-day-check ${task.completed_at ? 'checked' : ''}`} aria-label={task.completed_at ? `Undo ${task.title}` : `Complete ${task.title}`} disabled={busyTaskId === task.id} onClick={() => onToggleTask(task)}>{task.completed_at && <Check size={13} />}</button>
+            <button className="my-day-item-copy" onClick={() => onOpenTask(task)}><strong>{task.title}</strong><span>{overdue ? 'Overdue' : task.completed_at ? 'Done today' : task.due_at ? new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(new Date(task.due_at)) : 'Completed today'}</span></button>
+            {overdue && <span className="my-day-status overdue-status">Overdue</span>}
+            {task.priority === 'high' && !task.completed_at && <span className="my-day-status priority-status">High</span>}
+          </article>
+        })}</div> : <div className="my-day-empty"><Check size={17} /><span>No tasks due today. Nice breathing room.</span></div>}
+        <button className="my-day-view-all" onClick={onOpenTasks}>Open all tasks <ArrowRight size={13} /></button>
+      </section>
+      <section className="my-day-section my-day-study">
+        <div className="my-day-section-heading"><div><span className="my-day-section-icon study-icon"><BookOpen size={16} /></span><div><h2>Study reminders</h2><p>Sessions scheduled for today</p></div><span className="my-day-section-count study-count">{studyReminders.length}</span></div><button onClick={onAddStudy}><Plus size={15} /> Add</button></div>
+        {studyReminders.length ? <div className="my-day-item-list">{studyReminders.map((reminder) => {
+          const due = isReminderDue(reminder, new Date())
+          const date = reminder.remind_at ? localDateKey(new Date(reminder.remind_at)) : todayKey
+          const overdue = reminder.schedule_type !== 'weekly' && date < todayKey
+          const scheduleLabel = reminder.schedule_type === 'spaced'
+            ? `Spaced review ${reminder.review_count + 1}`
+            : reminder.schedule_type === 'weekly' ? 'Weekly session' : 'One-time session'
+          return <article className="my-day-item" key={reminder.id}>
+            <span className="my-day-time">{reminderTime(reminder)}</span>
+            <button className="my-day-item-copy" onClick={onOpenStudy}><strong>{reminder.topic || reminder.subject}</strong><span>{reminder.subject} · {scheduleLabel}</span></button>
+            {overdue && <span className="my-day-status overdue-status">Overdue</span>}
+            {reminder.schedule_type === 'spaced' && due && <button className="my-day-review" onClick={() => onReview(reminder)} disabled={reviewingId === reminder.id}>{reviewingId === reminder.id ? 'Saving…' : 'Reviewed'}</button>}
+          </article>
+        })}</div> : <div className="my-day-empty"><BookOpen size={17} /><span>No study sessions scheduled today.</span></div>}
+        <button className="my-day-view-all" onClick={onOpenStudy}>Open study schedule <ArrowRight size={13} /></button>
+      </section>
+      <section className="my-day-section my-day-discipline">
+        <div className="my-day-section-heading"><div><span className="my-day-section-icon discipline-icon"><ShieldCheck size={16} /></span><div><h2>Discipline</h2><p>Small promises on your schedule</p></div><span className="my-day-section-count discipline-count">{disciplineHabits.filter((habit) => !disciplineLogs.some((log) => log.habit_id === habit.id)).length}</span></div><button onClick={onAddDiscipline}><Plus size={15} /> Add</button></div>
+        {disciplineHabits.length ? <div className="my-day-item-list">{disciplineHabits.map((habit) => {
+          const done = disciplineLogs.some((log) => log.habit_id === habit.id)
+          return <article className={`my-day-item ${done ? 'item-complete' : ''}`} key={habit.id}>
+            <button className={`my-day-check ${done ? 'checked' : ''}`} aria-label={done ? `Undo ${habit.title}` : `Complete ${habit.title}`} disabled={busyDisciplineId === habit.id} onClick={() => onToggleDiscipline(habit)}>{done && <Check size={13} />}</button>
+            <div className="my-day-item-copy"><strong>{habit.title}</strong><span>{habit.cue_time ? `${formatTime(habit.cue_time)} · ` : ''}Minimum: {habit.minimum_action}</span></div>
+            {done && <span className="my-day-status done-status">Done</span>}
+          </article>
+        })}</div> : <div className="my-day-empty"><ShieldCheck size={17} /><span>No commitments scheduled today.</span></div>}
+        <button className="my-day-view-all" onClick={onOpenDiscipline}>Open discipline coach <ArrowRight size={13} /></button>
+      </section>
+    </div>}
+  </div>
 }
 
 function StudyDashboard({ reminders, subjects, loading, notificationsSupported, notificationPermission, notificationsEnabled, onEnableNotifications, onAdd, onToggle, onDelete, onReview, reviewingId }: {
@@ -692,6 +977,257 @@ function getNextReminderDate(reminder: StudyReminder, now: Date): Date | null {
     if (reminder.days_of_week.includes(date.getDay()) && date > now) return date
   }
   return null
+}
+
+function DisciplineDashboard({ habits, logs, loading, todayKey, notificationsSupported, notificationPermission, notificationsEnabled, onEnableNotifications, onAdd, onToggleLog, onToggleHabit, onDeleteHabit, busyId }: {
+  habits: DisciplineHabit[]
+  logs: DisciplineLog[]
+  loading: boolean
+  todayKey: string
+  notificationsSupported: boolean
+  notificationPermission: NotificationPermission | 'unsupported'
+  notificationsEnabled: boolean
+  onEnableNotifications: () => void
+  onAdd: () => void
+  onToggleLog: (habit: DisciplineHabit) => void
+  onToggleHabit: (habit: DisciplineHabit) => void
+  onDeleteHabit: (habit: DisciplineHabit) => void
+  busyId: string
+}) {
+  const activeHabits = habits.filter((habit) => habit.active)
+  const weekday = new Date(`${todayKey}T12:00:00`).getDay()
+  const todaysHabits = activeHabits.filter((habit) => habit.days_of_week.includes(weekday))
+  const doneToday = todaysHabits.filter((habit) => logs.some((log) => log.habit_id === habit.id && log.completed_on === todayKey)).length
+  const weekStart = new Date(`${todayKey}T12:00:00`)
+  weekStart.setDate(weekStart.getDate() - 6)
+  const weekKeys = Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(weekStart)
+    date.setDate(date.getDate() + index)
+    return localDateKey(date)
+  })
+  const completedKeys = new Set(logs.map((log) => `${log.habit_id}:${log.completed_on}`))
+  const historyStart = new Date(`${todayKey}T12:00:00`)
+  historyStart.setDate(historyStart.getDate() - 29)
+  const historyKeys = Array.from({ length: 30 }, (_, index) => {
+    const date = new Date(historyStart)
+    date.setDate(date.getDate() + index)
+    return localDateKey(date)
+  })
+  const historyByDay = historyKeys.map((dateKey) => {
+    const date = new Date(`${dateKey}T12:00:00`)
+    const plannedHabits = activeHabits.filter((habit) =>
+      dateKey >= localDateKey(new Date(habit.created_at)) && habit.days_of_week.includes(date.getDay()),
+    )
+    const completed = plannedHabits.filter((habit) => completedKeys.has(`${habit.id}:${dateKey}`)).length
+    return { dateKey, planned: plannedHabits.length, completed }
+  })
+  const consistencyTrend = historyByDay.map((_, index) => {
+    const week = historyByDay.slice(Math.max(0, index - 6), index + 1)
+    const planned = week.reduce((total, day) => total + day.planned, 0)
+    const completed = week.reduce((total, day) => total + day.completed, 0)
+    return { dateKey: historyByDay[index].dateKey, rate: planned ? Math.round(completed / planned * 100) : 0 }
+  })
+  const weekdayRhythm = Array.from({ length: 7 }, (_, dayOfWeek) => {
+    const matchingDays = historyByDay.filter(({ dateKey }) => new Date(`${dateKey}T12:00:00`).getDay() === dayOfWeek)
+    const planned = matchingDays.reduce((total, day) => total + day.planned, 0)
+    const completed = matchingDays.reduce((total, day) => total + day.completed, 0)
+    return {
+      label: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][dayOfWeek],
+      planned,
+      completed,
+      rate: planned ? Math.round(completed / planned * 100) : 0,
+    }
+  })
+  const habitProgress = activeHabits.map((habit) => {
+    const planned = historyByDay.reduce((total, day) => {
+      const date = new Date(`${day.dateKey}T12:00:00`)
+      return total + Number(day.dateKey >= localDateKey(new Date(habit.created_at)) && habit.days_of_week.includes(date.getDay()))
+    }, 0)
+    const completed = historyKeys.reduce((total, dateKey) =>
+      total + Number(completedKeys.has(`${habit.id}:${dateKey}`)), 0)
+    return { habit, planned, completed, rate: planned ? Math.round(completed / planned * 100) : 0 }
+  })
+  const trendPath = consistencyTrend.map(({ rate }, index) => {
+    const x = 38 + index * 18
+    const y = 142 - rate * 1.2
+    return `${index === 0 ? 'M' : 'L'} ${x} ${y}`
+  }).join(' ')
+  const trendArea = `${trendPath} L 560 148 L 38 148 Z`
+  let scheduledThisWeek = 0
+  let completedThisWeek = 0
+  for (const habit of activeHabits) {
+    for (const dateKey of weekKeys) {
+      if (dateKey < localDateKey(new Date(habit.created_at))) continue
+      const date = new Date(`${dateKey}T12:00:00`)
+      if (!habit.days_of_week.includes(date.getDay())) continue
+      scheduledThisWeek += 1
+      if (completedKeys.has(`${habit.id}:${dateKey}`)) completedThisWeek += 1
+    }
+  }
+  const weeklyRate = scheduledThisWeek ? Math.round((completedThisWeek / scheduledThisWeek) * 100) : 0
+  const bestStreak = Math.max(0, ...activeHabits.map((habit) => getHabitStreak(habit, completedKeys, todayKey)))
+  const doneByDay = weekKeys.map((dateKey) => {
+    const planned = activeHabits.filter((habit) => dateKey >= localDateKey(new Date(habit.created_at)) && habit.days_of_week.includes(new Date(`${dateKey}T12:00:00`).getDay()))
+    const completed = planned.filter((habit) => completedKeys.has(`${habit.id}:${dateKey}`)).length
+    return { dateKey, planned: planned.length, completed }
+  })
+
+  function renderHabit(habit: DisciplineHabit, scheduledToday: boolean) {
+    const complete = completedKeys.has(`${habit.id}:${todayKey}`)
+    const streak = getHabitStreak(habit, completedKeys, todayKey)
+    return <article className={`discipline-habit-card ${complete ? 'discipline-habit-complete' : ''}`} key={habit.id}>
+      <button className={`discipline-check ${complete ? 'checked' : ''}`} aria-label={complete ? `Undo ${habit.title} check-in` : `Complete ${habit.title}`} disabled={busyId === habit.id || !scheduledToday} onClick={() => onToggleLog(habit)}>{complete && <Check size={15} />}</button>
+      <div className="discipline-habit-main">
+        <div className="discipline-habit-title-row"><h3>{habit.title}</h3>{streak > 0 && <span className="discipline-streak"><Flame size={13} /> {streak} day streak</span>}</div>
+        <p><strong>Minimum:</strong> {habit.minimum_action}</p>
+        <span className="discipline-habit-meta">{scheduledToday ? habit.cue_time ? `Cue · ${formatTime(habit.cue_time)}` : 'Scheduled today' : `On ${habit.days_of_week.map((day) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][day]).join(', ')}`}</span>
+        <div className="discipline-week-dots" aria-label="Last seven days">
+          {doneByDay.map(({ dateKey }) => {
+            const date = new Date(`${dateKey}T12:00:00`)
+            const isPlanned = dateKey >= localDateKey(new Date(habit.created_at)) && habit.days_of_week.includes(date.getDay())
+            const isDone = completedKeys.has(`${habit.id}:${dateKey}`)
+            return <span key={dateKey} title={`${new Intl.DateTimeFormat('en', { weekday: 'short' }).format(date)}${isDone ? ' · complete' : isPlanned ? ' · planned' : ' · rest day'}`} className={`discipline-day-dot ${isDone ? 'done' : isPlanned ? 'planned' : ''}`} />
+          })}
+          <span className="discipline-dots-label">7-day history</span>
+        </div>
+      </div>
+      {!scheduledToday && <span className="discipline-next-label">Rest day</span>}
+      <button className="discipline-pause" onClick={() => onToggleHabit(habit)} aria-label={`Pause ${habit.title}`} title="Pause commitment"><span>Pause</span></button>
+      <button className="discipline-delete" onClick={() => onDeleteHabit(habit)} disabled={busyId === habit.id} aria-label={`Delete ${habit.title}`} title="Delete commitment"><X size={15} /></button>
+    </article>
+  }
+
+  return <div className="discipline-page">
+    <div className="welcome-row discipline-welcome">
+      <div><span className="eyebrow"><ShieldCheck size={14} /> KEEP PROMISES TO YOURSELF</span><h1>Discipline, built daily.</h1><p>Make the commitment small enough to keep. Consistency beats intensity.</p></div>
+      <button className="button button-primary add-task-button" onClick={onAdd}><Plus size={18} /> Add commitment</button>
+    </div>
+    <section className="discipline-hero">
+      <div className="discipline-hero-copy"><span><Flame size={15} /> THE DISCIPLINE LOOP</span><h2>Show up. Keep it small. Repeat.</h2><p>Choose a reliable cue and a minimum version you can do even on a hard day. If you miss, restart today—no catch-up punishment.</p></div>
+      <div className="discipline-loop">{['Cue', 'Small action', 'Check in'].map((step, index) => <div key={step}><span>{index + 1}</span><strong>{step}</strong></div>)}</div>
+    </section>
+    <section className="study-reminder discipline-nudge">
+      <div className="study-reminder-copy"><span className="study-reminder-icon"><Bell size={17} /></span><div><strong>Gentle cue-time nudges</strong><p>Get a browser notification when a commitment is scheduled.</p></div></div>
+      <div className="study-reminder-controls">
+        {notificationsEnabled
+          ? <span className="reminder-enabled-button"><Check size={14} /> Notifications on</span>
+          : <button className="enable-reminder-button" onClick={onEnableNotifications} disabled={!notificationsSupported || notificationPermission === 'denied'}>{notificationPermission === 'denied' ? 'Blocked in browser settings' : notificationsSupported ? 'Enable notifications' : 'Notifications unavailable'}</button>}
+      </div>
+      <p className={`study-reminder-note ${notificationsEnabled ? 'active' : ''}`}>{notificationsEnabled ? 'Nudges appear while Daymark is open. A completed commitment won’t nudge you again that day.' : 'Choose a cue time for a commitment, enable notifications, and keep Daymark open to receive the nudge.'}</p>
+    </section>
+    <section className="discipline-stats" aria-label="Discipline progress">
+      <article className="discipline-stat-card"><span>DONE TODAY</span><strong>{doneToday}<small> / {todaysHabits.length}</small></strong><div className="discipline-stat-track"><i style={{ width: `${todaysHabits.length ? Math.round(doneToday / todaysHabits.length * 100) : 0}%` }} /></div></article>
+      <article className="discipline-stat-card"><span>7-DAY FOLLOW-THROUGH</span><strong>{weeklyRate}<small>%</small></strong><p>{completedThisWeek} of {scheduledThisWeek} planned check-ins</p></article>
+      <article className="discipline-stat-card"><span>LONGEST CURRENT STREAK</span><strong>{bestStreak}<small> {bestStreak === 1 ? 'day' : 'days'}</small></strong><p>Built one kept promise at a time</p></article>
+    </section>
+    {!loading && activeHabits.length > 0 && <>
+      <section className="discipline-chart-grid" aria-label="Consistency charts">
+        <article className="discipline-chart-card">
+          <div className="discipline-chart-heading"><div><span className="chart-eyebrow">YOUR MOMENTUM</span><h2>30-day consistency</h2><p>A rolling 7-day view smooths out the ups and downs.</p></div><strong>{consistencyTrend.at(-1)?.rate ?? 0}%<small> this week</small></strong></div>
+          <div className="consistency-chart-wrap">
+            <svg className="consistency-chart" viewBox="0 0 580 180" role="img" aria-label="Rolling seven-day commitment follow-through over the last 30 days">
+              <defs><linearGradient id="consistency-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="#6d9a74" stopOpacity=".22" /><stop offset="100%" stopColor="#6d9a74" stopOpacity="0" /></linearGradient></defs>
+              {[0, 25, 50, 75, 100].map((rate) => {
+                const y = 142 - rate * 1.2
+                return <g key={rate}><line x1="38" y1={y} x2="560" y2={y} className="consistency-grid-line" /><text x="29" y={y + 3} textAnchor="end" className="consistency-axis-label">{rate}</text></g>
+              })}
+              <path d={trendArea} className="consistency-area" />
+              <path d={trendPath} className="consistency-line" />
+              {consistencyTrend.map(({ dateKey, rate }, index) => {
+                const x = 38 + index * 18
+                const y = 142 - rate * 1.2
+                return <circle key={dateKey} cx={x} cy={y} r={index === consistencyTrend.length - 1 ? 4 : 2.2} className="consistency-point"><title>{dateKey}: {rate}% rolling consistency</title></circle>
+              })}
+              <text x="38" y="169" className="consistency-axis-label">{new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric' }).format(new Date(`${historyKeys[0]}T12:00:00`))}</text>
+              <text x="560" y="169" textAnchor="end" className="consistency-axis-label">Today</text>
+            </svg>
+          </div>
+        </article>
+        <article className="discipline-chart-card">
+          <div className="discipline-chart-heading"><div><span className="chart-eyebrow">FIND YOUR FLOW</span><h2>Follow-through by day</h2><p>See which days are easiest—and where to make the plan smaller.</p></div></div>
+          <div className="weekday-chart" role="img" aria-label="Commitment completion rate for each weekday over the last 30 days">
+            {weekdayRhythm.map(({ label, planned, completed, rate }) => <div className="weekday-chart-column" key={label} title={`${label}: ${completed} of ${planned} commitments completed`}>
+              <strong>{planned ? `${rate}%` : '—'}</strong>
+              <div className="weekday-chart-track"><span style={{ height: `${rate}%` }} /></div>
+              <span className="weekday-chart-label">{label}</span>
+              <small>{completed}/{planned}</small>
+            </div>)}
+          </div>
+          <div className="weekday-chart-legend"><span><i /> completed / planned opportunities, last 30 days</span></div>
+        </article>
+      </section>
+      <section className="discipline-chart-card habit-progress-card">
+        <div className="discipline-chart-heading"><div><span className="chart-eyebrow">SMALL PROMISES ADD UP</span><h2>Commitment consistency</h2><p>Completion rate per commitment over its scheduled days in the last 30 days.</p></div></div>
+        <div className="habit-progress-list">{habitProgress.map(({ habit, planned, completed, rate }) => <div className="habit-progress-row" key={habit.id}>
+          <div className="habit-progress-label"><strong>{habit.title}</strong><span>{completed} of {planned} days · {rate}%</span></div>
+          <div className="habit-progress-track" role="progressbar" aria-label={`${habit.title} consistency`} aria-valuenow={rate} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${rate}%` }} /></div>
+        </div>)}</div>
+      </section>
+    </>}
+    <section className="discipline-commitments">
+      <div className="study-section-heading"><div><span className="chart-eyebrow">YOUR COMMITMENTS</span><h2>Today’s promises</h2><p>Do the minimum first. You can always do more.</p></div><span className="study-library-count">{todaysHabits.length} scheduled</span></div>
+      {loading ? <div className="study-empty"><span className="loader" /> Loading your commitments…</div>
+        : todaysHabits.length ? <div className="discipline-habit-list">{todaysHabits.map((habit) => renderHabit(habit, true))}</div>
+          : <div className="discipline-empty"><span className="study-empty-icon"><ShieldCheck size={21} /></span><h3>{activeHabits.length ? 'A planned rest day.' : 'Start with one promise.'}</h3><p>{activeHabits.length ? 'Your routine has no commitments scheduled today. Rest is part of a sustainable system.' : 'Pick one small action you can reliably repeat. Build from consistency, not a perfect plan.'}</p><button className="button button-secondary" onClick={onAdd}><Plus size={16} /> {activeHabits.length ? 'Add a commitment' : 'Create your first commitment'}</button></div>}
+    </section>
+    {activeHabits.some((habit) => !habit.days_of_week.includes(weekday)) && <section className="discipline-commitments"><div className="study-section-heading"><div><span className="chart-eyebrow">COMING UP</span><h2>Other days</h2><p>These commitments are scheduled for later in your week.</p></div></div><div className="discipline-habit-list">{activeHabits.filter((habit) => !habit.days_of_week.includes(weekday)).map((habit) => renderHabit(habit, false))}</div></section>}
+    {habits.some((habit) => !habit.active) && <section className="discipline-commitments"><div className="study-section-heading"><div><span className="chart-eyebrow">ON PAUSE</span><h2>Paused commitments</h2><p>Resume when you’re ready to recommit.</p></div></div><div className="discipline-habit-list">{habits.filter((habit) => !habit.active).map((habit) => <article className="discipline-paused-card" key={habit.id}><div><strong>{habit.title}</strong><span>{habit.minimum_action}</span></div><div className="discipline-paused-actions"><button className="discipline-resume" onClick={() => onToggleHabit(habit)}>Resume</button><button className="discipline-delete" onClick={() => onDeleteHabit(habit)} disabled={busyId === habit.id} aria-label={`Delete ${habit.title}`} title="Delete commitment"><X size={15} /></button></div></article>)}</div></section>}
+  </div>
+}
+
+function getHabitStreak(habit: DisciplineHabit, completedKeys: Set<string>, todayKey: string) {
+  const createdKey = localDateKey(new Date(habit.created_at))
+  const today = new Date(`${todayKey}T12:00:00`)
+  let count = 0
+  let offset = 0
+  if (habit.days_of_week.includes(today.getDay()) && !completedKeys.has(`${habit.id}:${todayKey}`)) offset = -1
+  for (; offset >= -365; offset -= 1) {
+    const date = new Date(today)
+    date.setDate(date.getDate() + offset)
+    const dateKey = localDateKey(date)
+    if (dateKey < createdKey) break
+    if (!habit.days_of_week.includes(date.getDay())) continue
+    if (!completedKeys.has(`${habit.id}:${dateKey}`)) break
+    count += 1
+  }
+  return count
+}
+
+function DisciplineHabitDialog({ onClose, onSave }: {
+  onClose: () => void
+  onSave: (draft: DisciplineHabitDraft) => Promise<boolean>
+}) {
+  const [title, setTitle] = useState('')
+  const [minimumAction, setMinimumAction] = useState('')
+  const [days, setDays] = useState<number[]>([1, 2, 3, 4, 5])
+  const [cueTime, setCueTime] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [formError, setFormError] = useState('')
+  function toggleDay(day: number) {
+    setDays((current) => current.includes(day) ? current.filter((value) => value !== day) : [...current, day].sort((a, b) => a - b))
+  }
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    if (days.length === 0) {
+      setFormError('Choose at least one day for this commitment.')
+      return
+    }
+    setBusy(true)
+    const saved = await onSave({ title, minimum_action: minimumAction, days_of_week: days, cue_time: cueTime })
+    setBusy(false)
+    if (saved) onClose()
+  }
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><form className="task-modal discipline-modal" onSubmit={(event) => void submit(event)}>
+    <div className="modal-heading"><div><span className="eyebrow"><ShieldCheck size={13} /> MAKE A PROMISE YOU CAN KEEP</span><h2>Create a commitment</h2></div><button type="button" className="icon-button" aria-label="Close dialog" onClick={onClose}><X size={18} /></button></div>
+    <p className="study-form-intro">Start with one or two habits. Pick a clear cue and define the smallest version that still counts.</p>
+    <label>What will you practice?<input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="e.g. Read, stretch, review notes" maxLength={70} required /></label>
+    <label>Your minimum version<input value={minimumAction} onChange={(event) => setMinimumAction(event.target.value)} placeholder="e.g. Read one page" maxLength={120} required /></label>
+    <fieldset className="study-day-picker"><legend>Commit on</legend>{[['M', 1], ['T', 2], ['W', 3], ['T', 4], ['F', 5], ['S', 6], ['S', 0]].map(([label, day], index) => <button key={`${day}-${index}`} type="button" className={days.includes(Number(day)) ? 'study-day selected' : 'study-day'} aria-pressed={days.includes(Number(day))} onClick={() => toggleDay(Number(day))}>{label}</button>)}</fieldset>
+    <label>Daily cue time <span className="optional-label">OPTIONAL</span><input type="time" value={cueTime} onChange={(event) => setCueTime(event.target.value)} /></label>
+    {formError && <p className="form-error" role="alert">{formError}</p>}
+    <div className="study-form-tip"><Sparkles size={14} /><span>Attach it to a stable cue: “After breakfast, I’ll read one page.” The minimum action keeps the promise alive on difficult days.</span></div>
+    <div className="modal-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={busy}>{busy ? 'Saving…' : 'Create commitment'} <ArrowRight size={16} /></button></div>
+  </form></div>
 }
 
 function DashboardCharts({ tasks, weekStart }: { tasks: Task[]; weekStart: Date }) {
