@@ -6,7 +6,7 @@ A responsive to-do app built with React, TypeScript, Vite, and Supabase. It incl
 
 1. Create a Supabase project.
 2. Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in `.env` from the project's API settings. The existing `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` names are also supported.
-3. In the Supabase SQL Editor, run `20261031000000_create_tasks.sql`, `20261031223000_create_study_reminders.sql`, `20261031230000_add_spaced_repetition.sql`, `20261031233000_create_discipline_coach.sql`, and `20261031234000_enable_discipline_commitment_delete.sql` in that order. The older study-card migration is no longer needed; if you already ran it, its table is left untouched and the app no longer uses it.
+3. In the Supabase SQL Editor, run `20261031000000_create_tasks.sql`, `20261101220000_create_task_subtasks.sql`, `20261031223000_create_study_reminders.sql`, `20261031230000_add_spaced_repetition.sql`, `20261031233000_create_discipline_coach.sql`, and `20261031234000_enable_discipline_commitment_delete.sql` in that order. The older study-card migration is no longer needed; if you already ran it, its table is left untouched and the app no longer uses it.
 4. Install dependencies and start the app:
 
    ```sh

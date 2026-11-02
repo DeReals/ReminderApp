@@ -1,5 +1,22 @@
 export type Priority = 'low' | 'medium' | 'high'
 
+export type TaskSubtask = {
+  id: string
+  user_id: string
+  task_id: string
+  title: string
+  due_at: string | null
+  completed_at: string | null
+  created_at: string
+}
+
+export type TaskSubtaskDraft = {
+  id: string
+  title: string
+  due_at: string
+  completed_at: string | null
+}
+
 export type Task = {
   id: string
   user_id: string
@@ -10,6 +27,7 @@ export type Task = {
   category: string
   completed_at: string | null
   created_at: string
+  subtasks: TaskSubtask[]
 }
 
 export type TaskDraft = {
@@ -18,6 +36,7 @@ export type TaskDraft = {
   due_at: string
   priority: Priority
   category: string
+  subtasks: TaskSubtaskDraft[]
 }
 
 export type StudyReminder = {

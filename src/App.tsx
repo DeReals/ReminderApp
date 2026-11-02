@@ -22,7 +22,7 @@ import {
   X,
 } from 'lucide-react'
 import { supabase } from './lib/supabase'
-import type { DisciplineHabit, DisciplineHabitDraft, DisciplineLog, Priority, StudyReminder, StudyReminderDraft, Task, TaskDraft } from './types'
+import type { DisciplineHabit, DisciplineHabitDraft, DisciplineLog, Priority, StudyReminder, StudyReminderDraft, Task, TaskDraft, TaskSubtask, TaskSubtaskDraft } from './types'
 
 const emptyDraft: TaskDraft = {
   title: '',
@@ -30,6 +30,7 @@ const emptyDraft: TaskDraft = {
   due_at: '',
   priority: 'medium',
   category: '',
+  subtasks: [],
 }
 
 const fullDate = new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: 'numeric' })
@@ -167,7 +168,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
   const notifiedReminderKeys = useRef(new Set<string>())
   const today = new Date()
   const todayKey = localDateKey(today)
-  const weekStart = new Date(today.getFullYear(), today.getMonth(), today.getDate() - ((today.getDay() + 6) % 7))
+  const weekStart = new Date(today.getFullYear(), today.getMonth(), today.getDate() - today.getDay())
   const weekEnd = new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + 6)
   const weekStartKey = localDateKey(weekStart)
   const weekEndKey = localDateKey(weekEnd)
@@ -176,10 +177,23 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
 
   async function loadTasks() {
     setLoading(true)
-    const { data, error: loadError } = await client.from('tasks').select('*').order('due_at', { ascending: true, nullsFirst: false })
-    if (loadError) setError(`Could not load tasks: ${loadError.message}`)
+    const [tasksResult, subtasksResult] = await Promise.all([
+      client.from('tasks').select('*').order('due_at', { ascending: true, nullsFirst: false }),
+      client.from('task_subtasks').select('*').order('created_at', { ascending: true }),
+    ])
+    if (tasksResult.error) setError(`Could not load tasks: ${tasksResult.error.message}`)
+    else if (subtasksResult.error) setError(`Could not load subtasks: ${subtasksResult.error.message}`)
     else {
-      setTasks(data as Task[])
+      const subtasksByTask = new Map<string, TaskSubtask[]>()
+      for (const subtask of subtasksResult.data) {
+        const items = subtasksByTask.get(subtask.task_id) ?? []
+        items.push(subtask as TaskSubtask)
+        subtasksByTask.set(subtask.task_id, items)
+      }
+      setTasks((tasksResult.data as Omit<Task, 'subtasks'>[]).map((task) => ({
+        ...task,
+        subtasks: subtasksByTask.get(task.id) ?? [],
+      })))
       setError('')
     }
     setLoading(false)
@@ -514,7 +528,34 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
       setError(`Could not save task: ${result.error.message}`)
       return false
     }
+    const savedTask = result.data
+    const subtasks = draft.subtasks.map((subtask) => ({
+      id: subtask.id,
+      task_id: savedTask.id,
+      user_id: session.user.id,
+      title: subtask.title.trim(),
+      due_at: subtask.due_at ? new Date(subtask.due_at).toISOString() : null,
+      completed_at: subtask.completed_at,
+    }))
+    const subtasksResult = subtasks.length
+      ? await client.from('task_subtasks').upsert(subtasks)
+      : { error: null }
+    if (subtasksResult.error) {
+      await loadTasks()
+      setError(`Task saved, but could not save its subtasks: ${subtasksResult.error.message}`)
+      return false
+    }
+    const removedSubtaskIds = editing?.subtasks
+      .filter((subtask) => !draft.subtasks.some((draftSubtask) => draftSubtask.id === subtask.id))
+      .map((subtask) => subtask.id) ?? []
+    const deleteSubtasksResult = removedSubtaskIds.length
+      ? await client.from('task_subtasks').delete().eq('task_id', savedTask.id).in('id', removedSubtaskIds)
+      : { error: null }
     await loadTasks()
+    if (deleteSubtasksResult.error) {
+      setError(`Task saved, but could not remove a subtask: ${deleteSubtasksResult.error.message}`)
+      return false
+    }
     setDialogOpen(false)
     setEditing(null)
     setInitialDate('')
@@ -697,7 +738,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
           {completionMessage && <div className="completion-toast" role="status"><span className="toast-check"><Check size={15} /></span>{completionMessage}<button onClick={() => setCompletionMessage('')} aria-label="Dismiss message"><X size={15} /></button></div>}
 
           {loading ? <div className="loading-state"><span className="loader" /> Gathering your tasks…</div> : view === 'calendar'
-            ? <CalendarView tasks={filteredTasks} month={calendarMonth} setMonth={setCalendarMonth} onAdd={openNewTask} onEdit={(task) => { setEditing(task); setDialogOpen(true) }} />
+            ? <CalendarView tasks={tasks} month={calendarMonth} setMonth={setCalendarMonth} onAdd={openNewTask} onEdit={(task) => { setEditing(task); setDialogOpen(true) }} />
             : <TaskList tasks={filteredTasks} filter={filter} onToggle={toggleTask} onEdit={(task) => { setEditing(task); setDialogOpen(true) }} onDelete={deleteTask} busyId={busyId} onAdd={() => openNewTask()} />}
           </>}
         </section>
@@ -1246,34 +1287,34 @@ function DashboardCharts({ tasks, weekStart }: { tasks: Task[]; weekStart: Date 
     return {
       key,
       label: new Intl.DateTimeFormat('en', { weekday: 'short' }).format(date),
-      added: tasks.filter((task) => localDateKey(new Date(task.created_at)) === key).length,
+      due: tasks.filter((task) => task.due_at && localDateKey(new Date(task.due_at)) === key).length,
       completed: tasks.filter((task) => task.completed_at && localDateKey(new Date(task.completed_at)) === key).length,
     }
   })
-  const maxActivity = Math.max(1, ...days.flatMap((day) => [day.added, day.completed]))
-  const addedThisWeek = days.reduce((total, day) => total + day.added, 0)
+  const maxActivity = Math.max(1, ...days.flatMap((day) => [day.due, day.completed]))
+  const dueThisWeek = days.reduce((total, day) => total + day.due, 0)
   const completedThisWeek = days.reduce((total, day) => total + day.completed, 0)
   return <section className="charts-grid" aria-label="Task charts">
     <article className="chart-card weekly-chart">
-      <div className="chart-heading"><div><span className="chart-eyebrow">YOUR WEEK</span><h2>Tasks added &amp; completed</h2><p>See your progress, one day at a time.</p></div><span className="chart-period">MON – SUN</span></div>
-      <div className="weekly-chart-legend"><span><i className="legend-added" />Added</span><span><i className="legend-completed" />Completed</span></div>
-      <svg className="weekly-chart-svg" viewBox="0 0 360 145" role="img" aria-label={`This week: ${addedThisWeek} tasks added, ${completedThisWeek} completed. ${days.map((day) => `${day.label}: ${day.added} added, ${day.completed} completed`).join('; ')}`}>
+      <div className="chart-heading"><div><span className="chart-eyebrow">YOUR WEEK</span><h2>Tasks due &amp; completed</h2><p>Compare due dates with when you finish tasks.</p></div><span className="chart-period">SUN – SAT</span></div>
+      <div className="weekly-chart-legend"><span><i className="legend-due" />Due</span><span><i className="legend-completed" />Completed</span></div>
+      <svg className="weekly-chart-svg" viewBox="0 0 360 145" role="img" aria-label={`This week: ${dueThisWeek} tasks due, ${completedThisWeek} completed. ${days.map((day) => `${day.label}: ${day.due} due, ${day.completed} completed`).join('; ')}`}>
         {[24, 62, 100].map((y) => <line key={y} x1="20" x2="348" y1={y} y2={y} className="chart-grid-line" />)}
         {days.map((day, index) => {
           const x = 27 + index * 47
-          const addedHeight = day.added ? Math.max((day.added / maxActivity) * 70, 4) : 0
+          const dueHeight = day.due ? Math.max((day.due / maxActivity) * 70, 4) : 0
           const completedHeight = day.completed ? Math.max((day.completed / maxActivity) * 70, 4) : 0
           const base = 100
           return <g key={day.key}>
-            <title>{`${day.label}: ${day.added} added, ${day.completed} completed`}</title>
+            <title>{`${day.label}: ${day.due} due, ${day.completed} completed`}</title>
             {day.key === todayKey && <rect className="chart-today-highlight" x={x - 5} y="17" width="36" height="114" rx="8" />}
-            {day.added > 0 && <rect className="chart-bar-added" x={x} y={base - addedHeight} width="11" height={addedHeight} rx="4" />}
+            {day.due > 0 && <rect className="chart-bar-due" x={x} y={base - dueHeight} width="11" height={dueHeight} rx="4" />}
             {day.completed > 0 && <rect className="chart-bar-completed" x={x + 14} y={base - completedHeight} width="11" height={completedHeight} rx="4" />}
             <text className={`chart-day-label ${day.key === todayKey ? 'today' : ''}`} x={x + 12} y="124" textAnchor="middle">{day.label}</text>
           </g>
         })}
       </svg>
-      <div className="weekly-chart-summary"><span><strong>{addedThisWeek}</strong> added this week</span><span><strong>{completedThisWeek}</strong> completed this week</span></div>
+      <div className="weekly-chart-summary"><span><strong>{dueThisWeek}</strong> due this week</span><span><strong>{completedThisWeek}</strong> completed this week</span></div>
     </article>
     <article className="chart-card completion-chart">
       <div className="chart-heading"><div><span className="chart-eyebrow">A LITTLE PROGRESS</span><h2>Task completion</h2><p>Your overall task balance.</p></div><span className="chart-period">ALL TASKS</span></div>
@@ -1339,7 +1380,7 @@ function TaskGroup({ title, tasks, onToggle, onEdit, onDelete, busyId }: {
   return <section className="task-group"><div className="group-heading"><span>{title}</span><span className="group-line" /><span className="group-count">{tasks.length}</span></div><div className="task-cards">
     {tasks.map((task) => <article className={`task-card ${task.completed_at ? 'is-completed' : ''}`} key={task.id}>
       <button className={`task-check ${task.completed_at ? 'checked' : ''}`} aria-label={task.completed_at ? `Mark ${task.title} active` : `Complete ${task.title}`} disabled={busyId === task.id} onClick={() => onToggle(task)}>{task.completed_at && <Check size={14} />}</button>
-      <button className="task-main" onClick={() => onEdit(task)}><span className="task-title">{task.title}</span>{task.description && <span className="task-description">{task.description}</span>}<span className="task-meta">{task.due_at ? <span className="task-date"><CalendarDays size={13} />{shortDate.format(new Date(task.due_at))}{task.due_at.includes('T') && <> · {new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(new Date(task.due_at))}</>}</span> : <span className="task-date no-date">No due date</span>}{task.category && <span className="category-chip">{task.category}</span>}</span></button>
+      <button className="task-main" onClick={() => onEdit(task)}><span className="task-title">{task.title}</span>{task.description && <span className="task-description">{task.description}</span>}{task.subtasks.length > 0 && <span className="task-description">{task.subtasks.filter((subtask) => subtask.completed_at).length}/{task.subtasks.length} subtasks complete</span>}<span className="task-meta">{task.due_at ? <span className="task-date"><CalendarDays size={13} />{shortDate.format(new Date(task.due_at))}{task.due_at.includes('T') && <> · {new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(new Date(task.due_at))}</>}</span> : <span className="task-date no-date">No due date</span>}{task.category && <span className="category-chip">{task.category}</span>}</span></button>
       <span className={`priority-pill ${task.priority}`}><i />{task.priority}</span>
       <button className="delete-task" onClick={() => onDelete(task)} aria-label={`Delete ${task.title}`} disabled={busyId === task.id}><X size={16} /></button>
     </article>)}
@@ -1356,33 +1397,44 @@ function CalendarView({ tasks, month, setMonth, onAdd, onEdit }: {
   const year = month.getFullYear()
   const monthIndex = month.getMonth()
   const firstDay = new Date(year, monthIndex, 1)
-  const mondayOffset = (firstDay.getDay() + 6) % 7
+  const sundayOffset = firstDay.getDay()
   const daysInMonth = new Date(year, monthIndex + 1, 0).getDate()
-  const cellCount = Math.ceil((mondayOffset + daysInMonth) / 7) * 7
+  const cellCount = Math.ceil((sundayOffset + daysInMonth) / 7) * 7
   const cells = Array.from({ length: cellCount }, (_, index) => {
-    const day = index - mondayOffset + 1
+    const day = index - sundayOffset + 1
     return day > 0 && day <= daysInMonth ? new Date(year, monthIndex, day) : null
   })
-  const tasksByDate = new Map<string, Task[]>()
+  const itemsByDate = new Map<string, { key: string; title: string; completed: boolean; priority: Priority; task: Task; isSubtask: boolean }[]>()
+  function addCalendarItem(date: string, item: { key: string; title: string; completed: boolean; priority: Priority; task: Task; isSubtask: boolean }) {
+    const items = itemsByDate.get(date) ?? []
+    items.push(item)
+    itemsByDate.set(date, items)
+  }
   tasks.forEach((task) => {
     if (task.due_at) {
       const key = localDateKey(new Date(task.due_at))
-      tasksByDate.set(key, [...(tasksByDate.get(key) ?? []), task])
+      addCalendarItem(key, { key: task.id, title: task.title, completed: Boolean(task.completed_at), priority: task.priority, task, isSubtask: false })
     }
+    task.subtasks.forEach((subtask) => {
+      if (subtask.due_at) {
+        const key = localDateKey(new Date(subtask.due_at))
+        addCalendarItem(key, { key: subtask.id, title: subtask.title, completed: Boolean(subtask.completed_at), priority: task.priority, task, isSubtask: true })
+      }
+    })
   })
   const todayKey = localDateKey(new Date())
   const monthTitle = new Intl.DateTimeFormat('en', { month: 'long', year: 'numeric' }).format(month)
 
   return <section className="calendar-card">
     <div className="calendar-heading"><div><h2>{monthTitle}</h2><p>Your time, at a glance.</p></div><div className="calendar-controls"><button className="icon-button" aria-label="Previous month" onClick={() => setMonth(new Date(year, monthIndex - 1, 1))}><ArrowLeft size={17} /></button><button className="today-button" onClick={() => setMonth(new Date())}>Today</button><button className="icon-button" aria-label="Next month" onClick={() => setMonth(new Date(year, monthIndex + 1, 1))}><ArrowRight size={17} /></button></div></div>
-    <div className="calendar-grid calendar-weekdays">{['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) => <div key={day}>{day}</div>)}</div>
+    <div className="calendar-grid calendar-weekdays">{['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => <div key={day}>{day}</div>)}</div>
     <div className="calendar-grid calendar-days">{cells.map((date, index) => {
       if (!date) return <div className="calendar-cell outside" key={`empty-${index}`} />
       const key = localDateKey(date)
-      const dayTasks = tasksByDate.get(key) ?? []
+      const dayItems = itemsByDate.get(key) ?? []
       return <div className={`calendar-cell ${key === todayKey ? 'today-cell' : ''}`} key={key}>
         <div className="calendar-day-heading"><span className="calendar-day-number">{date.getDate()}</span><button aria-label={`Add task on ${fullDate.format(date)}`} onClick={() => onAdd(`${key}T09:00`)}><Plus size={14} /></button></div>
-        <div className="calendar-day-tasks">{dayTasks.slice(0, 3).map((task) => <button key={task.id} className={`calendar-task ${task.completed_at ? 'done' : task.priority}`} title={task.title} onClick={() => onEdit(task)}>{task.completed_at && <Check size={11} />}{task.title}</button>)}{dayTasks.length > 3 && <span className="more-tasks">+{dayTasks.length - 3} more</span>}</div>
+        <div className="calendar-day-tasks">{dayItems.slice(0, 3).map((item) => <button key={item.key} className={`calendar-task ${item.completed ? 'done' : item.priority} ${item.isSubtask ? 'calendar-subtask' : ''}`} title={item.isSubtask ? `${item.task.title} › ${item.title}` : item.title} onClick={() => onEdit(item.task)}>{item.completed && <Check size={11} />}{item.isSubtask && <span className="calendar-subtask-marker" aria-hidden="true">↳</span>}{item.title}</button>)}{dayItems.length > 3 && <span className="more-tasks">+{dayItems.length - 3} more</span>}</div>
       </div>
     })}</div>
   </section>
@@ -1400,8 +1452,28 @@ function TaskDialog({ task, initialDate, onClose, onSave }: {
     due_at: task.due_at ? toLocalDateTimeInput(task.due_at) : '',
     priority: task.priority,
     category: task.category ?? '',
+    subtasks: task.subtasks.map((subtask) => ({
+      id: subtask.id,
+      title: subtask.title,
+      due_at: subtask.due_at ? toLocalDateTimeInput(subtask.due_at) : '',
+      completed_at: subtask.completed_at,
+    })),
   } : { ...emptyDraft, due_at: initialDate })
   const [busy, setBusy] = useState(false)
+
+  function updateSubtask(id: string, updates: Partial<TaskSubtaskDraft>) {
+    setDraft((current) => ({
+      ...current,
+      subtasks: current.subtasks.map((subtask) => subtask.id === id ? { ...subtask, ...updates } : subtask),
+    }))
+  }
+
+  function addSubtask() {
+    setDraft((current) => ({
+      ...current,
+      subtasks: [...current.subtasks, { id: crypto.randomUUID(), title: '', due_at: '', completed_at: null }],
+    }))
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -1417,6 +1489,15 @@ function TaskDialog({ task, initialDate, onClose, onSave }: {
     <label>A few more details <span className="optional-label">OPTIONAL</span><textarea value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} placeholder="Add a note to future you…" rows={3} maxLength={1000} /></label>
     <div className="form-row"><label>When<input type="datetime-local" value={draft.due_at} onChange={(event) => setDraft({ ...draft, due_at: event.target.value })} /></label><label>Priority<select value={draft.priority} onChange={(event) => setDraft({ ...draft, priority: event.target.value as Priority })}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label></div>
     <label>Category <span className="optional-label">OPTIONAL</span><input value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value })} placeholder="Work, personal, errands…" maxLength={32} /></label>
+    <section className="subtasks-editor" aria-label="Subtasks">
+      <div className="subtasks-heading"><div><strong>Subtasks</strong><span className="optional-label">OPTIONAL</span></div><button type="button" className="subtask-add" onClick={addSubtask}><Plus size={14} /> Add subtask</button></div>
+      {draft.subtasks.map((subtask) => <div className="subtask-row" key={subtask.id}>
+        <input aria-label="Subtask title" value={subtask.title} onChange={(event) => updateSubtask(subtask.id, { title: event.target.value })} placeholder="What’s the next step?" maxLength={120} required />
+        <input aria-label="Subtask due date" type="datetime-local" value={subtask.due_at} onChange={(event) => updateSubtask(subtask.id, { due_at: event.target.value })} />
+        <button type="button" className={`subtask-check ${subtask.completed_at ? 'checked' : ''}`} aria-label={subtask.completed_at ? `Mark ${subtask.title || 'subtask'} incomplete` : `Complete ${subtask.title || 'subtask'}`} onClick={() => updateSubtask(subtask.id, { completed_at: subtask.completed_at ? null : new Date().toISOString() })}>{subtask.completed_at && <Check size={13} />}</button>
+        <button type="button" className="subtask-remove" aria-label={`Remove ${subtask.title || 'subtask'}`} onClick={() => setDraft((current) => ({ ...current, subtasks: current.subtasks.filter((item) => item.id !== subtask.id) }))}><X size={15} /></button>
+      </div>)}
+    </section>
     <div className="modal-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={busy}>{busy ? 'Saving…' : task ? 'Save changes' : 'Add to my list'} <ArrowRight size={16} /></button></div>
   </form></div>
 }
