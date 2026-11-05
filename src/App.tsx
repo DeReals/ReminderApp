@@ -213,10 +213,22 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
 
   async function loadStudyReminders() {
     setStudyLoading(true)
-    const { data, error: loadError } = await client.from('study_reminders').select('*').order('created_at', { ascending: false })
-    if (loadError) setError(`Could not load study reminders: ${loadError.message}`)
+    const fetchReminders = () => client.from('study_reminders').select('*').order('created_at', { ascending: false })
+    let result = await fetchReminders()
+    if (result.error && (result.error.code === 'PGRST301' || result.error.message.toLowerCase().includes('jwt expired'))) {
+      const { data: refreshData, error: refreshError } = await client.auth.refreshSession()
+      if (refreshError || !refreshData.session) {
+        setError(refreshError
+          ? `Your session expired and could not be refreshed: ${refreshError.message}. Please sign out and sign in again.`
+          : 'Your session expired. Please sign out and sign in again.')
+        setStudyLoading(false)
+        return
+      }
+      result = await fetchReminders()
+    }
+    if (result.error) setError(`Could not load study reminders: ${result.error.message}`)
     else {
-      setStudyReminders(data as StudyReminder[])
+      setStudyReminders(result.data as StudyReminder[])
       setError('')
     }
     setStudyLoading(false)
