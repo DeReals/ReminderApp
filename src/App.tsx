@@ -15,10 +15,14 @@ import {
   LayoutList,
   LogOut,
   Plus,
+  Pause,
+  Play,
+  RotateCcw,
   ShieldCheck,
   Search,
   SlidersHorizontal,
   Sparkles,
+  Timer,
   X,
 } from 'lucide-react'
 import { supabase } from './lib/supabase'
@@ -161,6 +165,12 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
   const [busyId, setBusyId] = useState('')
   const [reviewingId, setReviewingId] = useState('')
   const [completionMessage, setCompletionMessage] = useState('')
+  const [focusTaskId, setFocusTaskId] = useState<string | null>(null)
+  const [focusDuration, setFocusDuration] = useState(25 * 60)
+  const [focusRemaining, setFocusRemaining] = useState(25 * 60)
+  const [focusEndsAt, setFocusEndsAt] = useState<number | null>(null)
+  const [focusPhase, setFocusPhase] = useState<'focus' | 'break'>('focus')
+  const [breakAvailable, setBreakAvailable] = useState(false)
   const [studyDialogOpen, setStudyDialogOpen] = useState(false)
   const [disciplineDialogOpen, setDisciplineDialogOpen] = useState(false)
   const [disciplineBusyId, setDisciplineBusyId] = useState('')
@@ -505,6 +515,35 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
       const priorityRank: Record<Priority, number> = { high: 0, medium: 1, low: 2 }
       return priorityRank[a.priority] - priorityRank[b.priority]
     })[0]
+  const selectedFocusTask = tasks.find((task) => task.id === focusTaskId) ?? focusTask
+
+  useEffect(() => {
+    if (!focusEndsAt) return
+    const updateRemaining = () => {
+      const remaining = Math.max(0, Math.ceil((focusEndsAt - Date.now()) / 1000))
+      setFocusRemaining(remaining)
+      if (remaining === 0) {
+        setFocusEndsAt(null)
+        setCompletionMessage(focusPhase === 'focus'
+          ? 'Focus session complete. Take a short break before your next step.'
+          : 'Break complete. You’re ready for another focused session.')
+        setBreakAvailable(focusPhase === 'focus')
+        if (focusPhase === 'break') {
+          setFocusPhase('focus')
+          setFocusRemaining(focusDuration)
+        }
+        if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+          new Notification(focusPhase === 'focus' ? 'Focus session complete' : 'Break complete', {
+            body: focusPhase === 'focus' ? 'Nice work. Take a short break.' : 'Your break is over when you’re ready.',
+            tag: 'daymark-focus-timer',
+          })
+        }
+      }
+    }
+    updateRemaining()
+    const intervalId = window.setInterval(updateRemaining, 1000)
+    return () => window.clearInterval(intervalId)
+  }, [focusEndsAt, focusPhase, focusDuration])
 
   useEffect(() => {
     if (!completionMessage) return
@@ -595,6 +634,48 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
     setDialogOpen(true)
   }
 
+  function selectFocusTask(task: Task) {
+    setFocusTaskId(task.id)
+    setFocusPhase('focus')
+    setBreakAvailable(false)
+    setFocusEndsAt(null)
+    setFocusRemaining(focusDuration)
+  }
+
+  function setFocusMinutes(minutes: number) {
+    const seconds = minutes * 60
+    setFocusDuration(seconds)
+    setFocusRemaining(seconds)
+    setFocusPhase('focus')
+    setBreakAvailable(false)
+  }
+
+  function toggleFocusTimer() {
+    if (focusEndsAt) {
+      setFocusRemaining(Math.max(0, Math.ceil((focusEndsAt - Date.now()) / 1000)))
+      setFocusEndsAt(null)
+    } else if (focusRemaining > 0) {
+      if (selectedFocusTask) setFocusTaskId(selectedFocusTask.id)
+      setFocusEndsAt(Date.now() + focusRemaining * 1000)
+      setCompletionMessage('')
+    }
+  }
+
+  function resetFocusTimer() {
+    setFocusEndsAt(null)
+    setFocusRemaining(focusDuration)
+    setFocusPhase('focus')
+    setBreakAvailable(false)
+  }
+
+  function startBreak() {
+    setFocusPhase('break')
+    setFocusRemaining(5 * 60)
+    setBreakAvailable(false)
+    setFocusEndsAt(Date.now() + 5 * 60 * 1000)
+    setCompletionMessage('')
+  }
+
   const filterTitle = filter === 'today' ? 'Today' : filter === 'week' ? 'This week' : filter === 'month' ? 'This month' : filter === 'completed' ? 'Completed' : 'All tasks'
   const periodTitle = filter === 'today' ? 'Today, at your pace.' : filter === 'week' ? 'Your week, made clearer.' : filter === 'month' ? 'One month at a time.' : filter === 'completed' ? 'Look what you did.' : 'Make room for what matters.'
   const periodDescription = filter === 'today'
@@ -664,6 +745,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
             reviewingId={reviewingId}
             onToggleTask={(task) => void toggleTask(task)}
             onOpenTask={(task) => { setEditing(task); setDialogOpen(true) }}
+            onFocusTask={(task) => { selectFocusTask(task); setMode('tasks'); setFilter('all') }}
             onAddTask={() => openNewTask()}
             onOpenTasks={() => { setMode('tasks'); setFilter('all') }}
             onAddStudy={() => { setMode('study'); setStudyDialogOpen(true) }}
@@ -711,21 +793,24 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
             <PeriodCard label="This month" count={monthTasks.length} detail={new Intl.DateTimeFormat('en', { month: 'long' }).format(today)} selected={filter === 'month'} icon={<CalendarDays size={17} />} onClick={() => { setFilter('month'); setView('list') }} />
           </section>}
 
-          {filter !== 'completed' && <section className="focus-panel" aria-label="Your next step">
-            <div className="focus-copy">
-              <span className="focus-kicker"><Sparkles size={13} /> YOUR NEXT SMALL WIN</span>
-              <h2>{focusTask ? focusTask.title : todayTasks.length ? 'You showed up for yourself today.' : 'Start with one small thing.'}</h2>
-              <p>{focusTask ? `${focusTask.due_at ? `Due ${fullDate.format(new Date(focusTask.due_at))}` : 'No due date'} · ${focusTask.priority} priority. You’ve got this.` : todayTasks.length ? 'Your list is clear. Take a well-earned breath.' : 'Pick one task, and make the rest of the day a little lighter.'}</p>
-            </div>
-            {focusTask
-              ? <div className="focus-actions"><button className="focus-done-button" onClick={() => void toggleTask(focusTask)} disabled={busyId === focusTask.id}><Check size={16} /> Mark done</button><button className="focus-open-button" onClick={() => { setEditing(focusTask); setDialogOpen(true) }}>View task</button></div>
-              : !todayTasks.length && <button className="focus-done-button" onClick={() => openNewTask()}><Plus size={16} /> Add a task</button>}
-            <div className="focus-progress">
-              <div className="focus-progress-label"><span>TODAY’S PROGRESS</span><strong>{todayTasks.length ? `${todayCompleted} of ${todayTasks.length} done` : 'Every small step counts'}</strong></div>
-              <div className="progress-track" role="progressbar" aria-label="Today's task completion" aria-valuenow={todayProgress} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${todayProgress}%` }} /></div>
-            </div>
-            <span className="focus-orbit focus-orbit-one" /><span className="focus-orbit focus-orbit-two" />
-          </section>}
+          {filter !== 'completed' && <FocusTimerPanel
+            task={selectedFocusTask}
+            duration={focusDuration}
+            remaining={focusRemaining}
+            running={focusEndsAt !== null}
+            phase={focusPhase}
+            breakAvailable={breakAvailable}
+            onSetMinutes={setFocusMinutes}
+            onToggle={toggleFocusTimer}
+            onReset={resetFocusTimer}
+            onStartBreak={startBreak}
+            onOpenTask={selectedFocusTask ? () => { setEditing(selectedFocusTask); setDialogOpen(true) } : undefined}
+            onCompleteTask={selectedFocusTask ? () => void toggleTask(selectedFocusTask) : undefined}
+            taskBusy={selectedFocusTask ? busyId === selectedFocusTask.id : false}
+            onAddTask={() => openNewTask()}
+            todayProgress={todayProgress}
+            todayProgressLabel={todayTasks.length ? `${todayCompleted} of ${todayTasks.length} done` : 'Every small step counts'}
+          />}
 
           {!loading && <DashboardCharts tasks={tasks} weekStart={weekStart} />}
 
@@ -739,7 +824,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
 
           {loading ? <div className="loading-state"><span className="loader" /> Gathering your tasks…</div> : view === 'calendar'
             ? <CalendarView tasks={tasks} month={calendarMonth} setMonth={setCalendarMonth} onAdd={openNewTask} onEdit={(task) => { setEditing(task); setDialogOpen(true) }} />
-            : <TaskList tasks={filteredTasks} filter={filter} onToggle={toggleTask} onEdit={(task) => { setEditing(task); setDialogOpen(true) }} onDelete={deleteTask} busyId={busyId} onAdd={() => openNewTask()} />}
+            : <TaskList tasks={filteredTasks} filter={filter} onToggle={toggleTask} onEdit={(task) => { setEditing(task); setDialogOpen(true) }} onDelete={deleteTask} onFocus={selectFocusTask} busyId={busyId} onAdd={() => openNewTask()} />}
           </>}
         </section>
       </main>
@@ -750,7 +835,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
   )
 }
 
-function MyDayDashboard({ date, todayKey, tasks, studyReminders, disciplineHabits, disciplineLogs, loading, busyTaskId, busyDisciplineId, reviewingId, onToggleTask, onOpenTask, onAddTask, onOpenTasks, onAddStudy, onOpenStudy, onReview, onToggleDiscipline, onAddDiscipline, onOpenDiscipline }: {
+function MyDayDashboard({ date, todayKey, tasks, studyReminders, disciplineHabits, disciplineLogs, loading, busyTaskId, busyDisciplineId, reviewingId, onToggleTask, onOpenTask, onFocusTask, onAddTask, onOpenTasks, onAddStudy, onOpenStudy, onReview, onToggleDiscipline, onAddDiscipline, onOpenDiscipline }: {
   date: Date
   todayKey: string
   tasks: Task[]
@@ -763,6 +848,7 @@ function MyDayDashboard({ date, todayKey, tasks, studyReminders, disciplineHabit
   reviewingId: string
   onToggleTask: (task: Task) => void
   onOpenTask: (task: Task) => void
+  onFocusTask: (task: Task) => void
   onAddTask: () => void
   onOpenTasks: () => void
   onAddStudy: () => void
@@ -828,6 +914,7 @@ function MyDayDashboard({ date, todayKey, tasks, studyReminders, disciplineHabit
           return <article className={`my-day-item ${task.completed_at ? 'item-complete' : ''}`} key={task.id}>
             <button className={`my-day-check ${task.completed_at ? 'checked' : ''}`} aria-label={task.completed_at ? `Undo ${task.title}` : `Complete ${task.title}`} disabled={busyTaskId === task.id} onClick={() => onToggleTask(task)}>{task.completed_at && <Check size={13} />}</button>
             <button className="my-day-item-copy" onClick={() => onOpenTask(task)}><strong>{task.title}</strong><span>{overdue ? 'Overdue' : task.completed_at ? 'Done today' : task.due_at ? new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(new Date(task.due_at)) : 'Completed today'}</span></button>
+            {!task.completed_at && <button className="my-day-focus" onClick={() => onFocusTask(task)} aria-label={`Focus on ${task.title}`}><Timer size={14} /></button>}
             {overdue && <span className="my-day-status overdue-status">Overdue</span>}
             {task.priority === 'high' && !task.completed_at && <span className="my-day-status priority-status">High</span>}
           </article>
@@ -882,12 +969,36 @@ function StudyDashboard({ reminders, subjects, loading, notificationsSupported, 
   onReview: (reminder: StudyReminder) => void
   reviewingId: string
 }) {
+  const [reminderView, setReminderView] = useState<'all' | 'due' | 'upcoming' | 'paused'>('all')
+  const [subjectFilter, setSubjectFilter] = useState('all')
   const activeReminders = reminders.filter((reminder) => reminder.enabled)
-  const dueCount = activeReminders.filter((reminder) => isReminderDue(reminder, new Date())).length
-  const nextReminder = activeReminders
-    .map((reminder) => ({ reminder, next: getNextReminderDate(reminder, new Date()) }))
+  const now = new Date()
+  const dueReminders = activeReminders.filter((reminder) => isReminderDue(reminder, now))
+  const dueCount = dueReminders.length
+  const upcomingCount = activeReminders.length - dueCount
+  const nextReminder = dueReminders.length
+    ? { reminder: dueReminders[0], next: now, isDue: true }
+    : activeReminders
+    .map((reminder) => ({ reminder, next: getNextReminderDate(reminder, now) }))
     .filter((entry): entry is { reminder: StudyReminder; next: Date } => entry.next !== null)
-    .sort((a, b) => a.next.getTime() - b.next.getTime())[0]
+    .sort((a, b) => a.next.getTime() - b.next.getTime())
+    .map((entry) => ({ ...entry, isDue: false }))[0]
+  const visibleReminders = reminders
+    .filter((reminder) => {
+      if (subjectFilter !== 'all' && reminder.subject !== subjectFilter) return false
+      if (reminderView === 'paused') return !reminder.enabled
+      if (!reminder.enabled) return reminderView === 'all'
+      const due = isReminderDue(reminder, now)
+      return reminderView === 'all' || (reminderView === 'due' ? due : !due)
+    })
+    .sort((a, b) => {
+      if (a.enabled !== b.enabled) return Number(b.enabled) - Number(a.enabled)
+      const dueDifference = Number(isReminderDue(b, now)) - Number(isReminderDue(a, now))
+      if (dueDifference) return dueDifference
+      const dateA = getReminderSortDate(a, now)?.getTime() ?? Number.MAX_SAFE_INTEGER
+      const dateB = getReminderSortDate(b, now)?.getTime() ?? Number.MAX_SAFE_INTEGER
+      return dateA - dateB
+    })
 
   return <div className="study-page">
     <div className="welcome-row study-welcome">
@@ -895,13 +1006,11 @@ function StudyDashboard({ reminders, subjects, loading, notificationsSupported, 
       <button className="button button-primary add-task-button" onClick={onAdd}><Plus size={18} /> Schedule study</button>
     </div>
 
-    <section className="study-stats" aria-label="Study reminder overview">
-      <article className="study-stat-card due"><span className="study-stat-icon"><Bell size={17} /></span><span className="study-stat-label">SESSIONS DUE TODAY</span><strong>{dueCount}</strong><span>{dueCount === 1 ? 'session to keep on track' : 'sessions to keep on track'}</span></article>
-      <article className="study-stat-card"><span className="study-stat-icon"><BookOpen size={17} /></span><span className="study-stat-label">YOUR CLASSES</span><strong>{subjects.length}</strong><span>{subjects.length === 1 ? 'class to stay on top of' : 'classes to stay on top of'}</span></article>
-      <article className="study-stat-card"><span className="study-stat-icon"><Clock3 size={17} /></span><span className="study-stat-label">UP NEXT</span><strong className="study-next-time">{nextReminder ? new Intl.DateTimeFormat('en', { weekday: 'short', hour: 'numeric', minute: '2-digit' }).format(nextReminder.next) : '—'}</strong><span>{nextReminder?.reminder.subject ?? 'Schedule a session to begin'}</span></article>
+    <section className="study-overview" aria-label="Study reminder overview">
+      <div className={`study-overview-due ${dueCount ? 'has-due' : ''}`}><span className="study-stat-icon"><Bell size={17} /></span><div><span className="study-stat-label">DUE TODAY</span><strong>{dueCount}</strong><span>{dueCount === 1 ? 'session ready when you are' : 'sessions ready when you are'}</span></div></div>
+      <div className="study-overview-next"><span className="study-stat-icon"><Clock3 size={17} /></span><div><span className="study-stat-label">{nextReminder?.isDue ? 'READY NOW' : 'NEXT SESSION'}</span><strong>{nextReminder ? nextReminder.isDue ? 'Due now' : new Intl.DateTimeFormat('en', { weekday: 'short', hour: 'numeric', minute: '2-digit' }).format(nextReminder.next) : 'Nothing scheduled'}</strong><span>{nextReminder?.reminder.subject ?? 'Add a reminder to plan ahead'}</span></div></div>
+      <span className="study-overview-subjects"><BookOpen size={15} /> {subjects.length} {subjects.length === 1 ? 'subject' : 'subjects'}</span>
     </section>
-
-    <section className="study-how"><span className="study-how-icon"><Sparkles size={16} /></span><p><strong>Make it stick:</strong> Choose spaced repetition for a topic. After each review, Daymark schedules the next one after 1 day, 3 days, 1 week, 3 weeks, and then gradually longer intervals. Mark each session reviewed to advance the schedule.</p></section>
 
     <section className="study-reminder">
       <div className="study-reminder-copy"><span className="study-reminder-icon"><Bell size={17} /></span><div><strong>Browser notifications</strong><p>Allow notifications so Daymark can nudge you at the scheduled study time.</p></div></div>
@@ -914,9 +1023,21 @@ function StudyDashboard({ reminders, subjects, loading, notificationsSupported, 
     </section>
 
     <section className="study-library">
-      <div className="study-section-heading"><div><span className="chart-eyebrow">YOUR ROUTINE</span><h2>Upcoming study sessions</h2><p>One-time plans, weekly reminders, and spaced reviews.</p></div><span className="study-library-count">{activeReminders.length} active</span></div>
+      <div className="study-section-heading"><div><span className="chart-eyebrow">YOUR ROUTINE</span><h2>Study sessions</h2><p>Due sessions first, then what’s coming up.</p></div><span className="study-library-count">{activeReminders.length} active · {dueCount} due</span></div>
+      {!!reminders.length && <div className="study-filters" aria-label="Filter study reminders">
+        <div className="study-filter-tabs" role="group" aria-label="Reminder status">
+          {([
+            ['all', 'All', reminders.length],
+            ['due', 'Due now', dueCount],
+            ['upcoming', 'Upcoming', upcomingCount],
+            ['paused', 'Paused', reminders.length - activeReminders.length],
+          ] as const).map(([viewName, label, count]) => <button key={viewName} className={reminderView === viewName ? 'selected' : ''} onClick={() => setReminderView(viewName)} aria-pressed={reminderView === viewName}>{label}<span>{count}</span></button>)}
+        </div>
+        {subjects.length > 1 && <label className="study-subject-filter"><span>Subject</span><select value={subjectFilter} onChange={(event) => setSubjectFilter(event.target.value)}><option value="all">All subjects</option>{subjects.map((subject) => <option key={subject} value={subject}>{subject}</option>)}</select></label>}
+      </div>}
       {loading ? <div className="study-empty"><span className="loader" /> Loading your study schedule…</div>
-        : reminders.length ? <div className="study-library-list">{reminders.map((reminder) => <StudyReminderRow key={reminder.id} reminder={reminder} onToggle={() => onToggle(reminder)} onDelete={() => onDelete(reminder)} onReview={() => onReview(reminder)} reviewing={reviewingId === reminder.id} />)}</div>
+        : reminders.length ? visibleReminders.length ? <div className="study-library-list">{visibleReminders.map((reminder) => <StudyReminderRow key={reminder.id} reminder={reminder} onToggle={() => onToggle(reminder)} onDelete={() => onDelete(reminder)} onReview={() => onReview(reminder)} reviewing={reviewingId === reminder.id} />)}</div>
+          : <div className="study-filter-empty"><BookOpen size={17} /><span>No sessions match this view.</span><button onClick={() => { setReminderView('all'); setSubjectFilter('all') }}>Show all</button></div>
           : <div className="study-empty"><span className="study-empty-icon"><BookOpen size={21} /></span><h3>Give your classes a place in your week.</h3><p>Schedule a one-time session, a weekly reminder, or a spaced review plan. Your plans will stay here across devices.</p><button className="button button-secondary" onClick={onAdd}><Plus size={16} /> Schedule your first study session</button></div>}
     </section>
   </div>
@@ -1018,6 +1139,15 @@ function getNextReminderDate(reminder: StudyReminder, now: Date): Date | null {
     if (reminder.days_of_week.includes(date.getDay()) && date > now) return date
   }
   return null
+}
+
+function getReminderSortDate(reminder: StudyReminder, now: Date): Date | null {
+  if (reminder.schedule_type !== 'weekly') return reminder.remind_at ? new Date(reminder.remind_at) : null
+  const [hours = '18', minutes = '00'] = (reminder.remind_time ?? '18:00').split(':')
+  const nextDate = getNextReminderDate(reminder, now)
+  if (nextDate) return nextDate
+  if (!reminder.days_of_week.includes(now.getDay())) return null
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate(), Number(hours), Number(minutes))
 }
 
 function DisciplineDashboard({ habits, logs, loading, todayKey, notificationsSupported, notificationPermission, notificationsEnabled, onEnableNotifications, onAdd, onToggleLog, onToggleHabit, onDeleteHabit, busyId }: {
@@ -1351,12 +1481,76 @@ function PeriodCard({ label, count, detail, selected, icon, onClick }: {
   </button>
 }
 
-function TaskList({ tasks, filter, onToggle, onEdit, onDelete, busyId, onAdd }: {
+function FocusTimerPanel({ task, duration, remaining, running, phase, breakAvailable, onSetMinutes, onToggle, onReset, onStartBreak, onOpenTask, onCompleteTask, taskBusy, onAddTask, todayProgress, todayProgressLabel }: {
+  task?: Task
+  duration: number
+  remaining: number
+  running: boolean
+  phase: 'focus' | 'break'
+  breakAvailable: boolean
+  onSetMinutes: (minutes: number) => void
+  onToggle: () => void
+  onReset: () => void
+  onStartBreak: () => void
+  onOpenTask?: () => void
+  onCompleteTask?: () => void
+  taskBusy: boolean
+  onAddTask: () => void
+  todayProgress: number
+  todayProgressLabel: string
+}) {
+  const timerDuration = phase === 'break' ? 5 * 60 : duration
+  const circumference = 2 * Math.PI * 42
+  const offset = circumference * (1 - (timerDuration - remaining) / timerDuration)
+  const minutes = Math.floor(remaining / 60).toString().padStart(2, '0')
+  const seconds = (remaining % 60).toString().padStart(2, '0')
+
+  return <section className="focus-panel" aria-label="Focus timer">
+    <div className="focus-copy">
+      <span className="focus-kicker"><Sparkles size={13} /> {phase === 'break' ? 'REST AND RESET' : 'YOUR NEXT SMALL WIN'}</span>
+      <h2>{task ? task.title : 'Start with one small thing.'}</h2>
+      <p>{phase === 'break' ? 'Step away from your screen, stretch, and come back when the timer ends.' : task ? `${task.due_at ? `Due ${fullDate.format(new Date(task.due_at))}` : 'No due date'} · ${task.priority} priority. For this session, stay with this one thing.` : 'Choose a task below, or add one to begin a focused session.'}</p>
+      {task ? <div className="focus-task-actions">
+        <button className="focus-open-button" onClick={onOpenTask}>View task</button>
+        {onCompleteTask && <button className="focus-done-button" onClick={onCompleteTask} disabled={taskBusy}><Check size={15} /> Mark done</button>}
+      </div> : <button className="focus-done-button" onClick={onAddTask}><Plus size={15} /> Add a task</button>}
+    </div>
+    <div className="focus-timer">
+      <div className="focus-clock" role="timer" aria-label={`${minutes} minutes and ${seconds} seconds remaining`}>
+        <svg viewBox="0 0 100 100" aria-hidden="true">
+          <circle className="focus-clock-track" cx="50" cy="50" r="42" />
+          <circle className="focus-clock-progress" cx="50" cy="50" r="42" strokeDasharray={circumference} strokeDashoffset={offset} />
+        </svg>
+        <strong>{minutes}:{seconds}</strong>
+        <span>{phase === 'break' ? 'BREAK' : 'FOCUS'}</span>
+      </div>
+      <div className="focus-timer-tools">
+        <div className="focus-presets" aria-label="Focus session length">
+          {[15, 25, 50].map((minutesOption) => <button key={minutesOption} className={phase === 'focus' && duration === minutesOption * 60 ? 'selected' : ''} onClick={() => onSetMinutes(minutesOption)} disabled={running || phase === 'break'}>{minutesOption}m</button>)}
+        </div>
+        <div className="focus-timer-buttons">
+          <button className="focus-timer-start" onClick={onToggle} disabled={!task || (remaining === 0 && !running)} aria-label={running ? 'Pause timer' : 'Start timer'}>{running ? <Pause size={15} /> : <Play size={15} />}{running ? 'Pause' : 'Start focus'}</button>
+          <button className="focus-timer-reset" onClick={onReset} aria-label="Reset timer"><RotateCcw size={15} /></button>
+        </div>
+        {breakAvailable && <button className="focus-break-button" onClick={onStartBreak}><Timer size={14} /> Take a 5-minute break</button>}
+        <span className="focus-nudge">{running ? 'One task. One session. You’ve got this.' : 'A small block of focus adds up.'}</span>
+      </div>
+    </div>
+    <div className="focus-progress">
+      <div className="focus-progress-label"><span>TODAY’S PROGRESS</span><strong>{todayProgressLabel}</strong></div>
+      <div className="progress-track" role="progressbar" aria-label="Today's task completion" aria-valuenow={todayProgress} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${todayProgress}%` }} /></div>
+    </div>
+    <span className="focus-orbit focus-orbit-one" /><span className="focus-orbit focus-orbit-two" />
+  </section>
+}
+
+function TaskList({ tasks, filter, onToggle, onEdit, onDelete, onFocus, busyId, onAdd }: {
   tasks: Task[]
   filter: Filter
   onToggle: (task: Task) => void
   onEdit: (task: Task) => void
   onDelete: (task: Task) => void
+  onFocus: (task: Task) => void
   busyId: string
   onAdd: () => void
 }) {
@@ -1364,17 +1558,18 @@ function TaskList({ tasks, filter, onToggle, onEdit, onDelete, busyId, onAdd }: 
   const completed = tasks.filter((task) => task.completed_at)
   if (!tasks.length) return <div className="empty-state"><div className="empty-icon"><CheckCheck size={23} /></div><h2>{filter === 'completed' ? 'Nothing checked off just yet.' : 'A little room to breathe.'}</h2><p>{filter === 'completed' ? 'Finished tasks will find a home here.' : 'No tasks match this view. Add one whenever you’re ready.'}</p>{filter !== 'completed' && <button className="button button-secondary" onClick={onAdd}><Plus size={16} /> Add your first task</button>}</div>
   return <div className="task-list-wrap">
-    {active.length > 0 && <TaskGroup title={filter === 'today' ? 'ON YOUR MIND TODAY' : filter === 'week' ? 'DUE THIS WEEK' : filter === 'month' ? 'DUE THIS MONTH' : 'YOUR TASKS'} tasks={active} onToggle={onToggle} onEdit={onEdit} onDelete={onDelete} busyId={busyId} />}
-    {completed.length > 0 && <TaskGroup title="DONE AND DUSTED" tasks={completed} onToggle={onToggle} onEdit={onEdit} onDelete={onDelete} busyId={busyId} />}
+    {active.length > 0 && <TaskGroup title={filter === 'today' ? 'ON YOUR MIND TODAY' : filter === 'week' ? 'DUE THIS WEEK' : filter === 'month' ? 'DUE THIS MONTH' : 'YOUR TASKS'} tasks={active} onToggle={onToggle} onEdit={onEdit} onDelete={onDelete} onFocus={onFocus} busyId={busyId} />}
+    {completed.length > 0 && <TaskGroup title="DONE AND DUSTED" tasks={completed} onToggle={onToggle} onEdit={onEdit} onDelete={onDelete} onFocus={onFocus} busyId={busyId} />}
   </div>
 }
 
-function TaskGroup({ title, tasks, onToggle, onEdit, onDelete, busyId }: {
+function TaskGroup({ title, tasks, onToggle, onEdit, onDelete, onFocus, busyId }: {
   title: string
   tasks: Task[]
   onToggle: (task: Task) => void
   onEdit: (task: Task) => void
   onDelete: (task: Task) => void
+  onFocus: (task: Task) => void
   busyId: string
 }) {
   return <section className="task-group"><div className="group-heading"><span>{title}</span><span className="group-line" /><span className="group-count">{tasks.length}</span></div><div className="task-cards">
@@ -1382,6 +1577,7 @@ function TaskGroup({ title, tasks, onToggle, onEdit, onDelete, busyId }: {
       <button className={`task-check ${task.completed_at ? 'checked' : ''}`} aria-label={task.completed_at ? `Mark ${task.title} active` : `Complete ${task.title}`} disabled={busyId === task.id} onClick={() => onToggle(task)}>{task.completed_at && <Check size={14} />}</button>
       <button className="task-main" onClick={() => onEdit(task)}><span className="task-title">{task.title}</span>{task.description && <span className="task-description">{task.description}</span>}{task.subtasks.length > 0 && <span className="task-description">{task.subtasks.filter((subtask) => subtask.completed_at).length}/{task.subtasks.length} subtasks complete</span>}<span className="task-meta">{task.due_at ? <span className="task-date"><CalendarDays size={13} />{shortDate.format(new Date(task.due_at))}{task.due_at.includes('T') && <> · {new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(new Date(task.due_at))}</>}</span> : <span className="task-date no-date">No due date</span>}{task.category && <span className="category-chip">{task.category}</span>}</span></button>
       <span className={`priority-pill ${task.priority}`}><i />{task.priority}</span>
+      {!task.completed_at && <button className="task-focus-button" onClick={() => onFocus(task)} aria-label={`Focus on ${task.title}`}><Timer size={14} /><span>Focus</span></button>}
       <button className="delete-task" onClick={() => onDelete(task)} aria-label={`Delete ${task.title}`} disabled={busyId === task.id}><X size={16} /></button>
     </article>)}
   </div></section>

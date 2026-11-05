@@ -625,6 +625,17 @@ a { color: inherit; text-decoration: none; }
   .study-section-heading h2 { font-size: 15px; }
   .study-section-heading p { max-width: 230px; line-height: 1.5; }
   .study-library-item { gap: 6px; padding: 9px; }
+  .study-overview { grid-template-columns: 1fr 1fr; gap: 10px; padding: 11px; }
+  .study-overview-subjects { grid-column: 1 / -1; padding: 8px 0 0; border-top: 1px solid #e9ede7; border-left: 0; }
+  .study-overview-next { gap: 7px; }
+  .study-overview-next .study-stat-icon { width: 27px; height: 27px; flex-basis: 27px; }
+  .study-overview-next strong { font-size: 10px; }
+  .study-overview-due > div > span:last-child, .study-overview-next > div > span:last-child { font-size: 8px; }
+  .study-filters { align-items: flex-start; flex-direction: column; }
+  .study-filter-tabs { width: 100%; gap: 2px; }
+  .study-filter-tabs button { gap: 4px; min-height: 29px; padding: 0 6px; font-size: 8px; }
+  .study-subject-filter { width: 100%; }
+  .study-subject-filter select { flex: 1; max-width: none; }
 }
 
 .study-reminder-row-icon {
@@ -670,6 +681,28 @@ a { color: inherit; text-decoration: none; }
   .study-reminder-row-main .study-library-schedule { font-size: 8px; }
   .study-day-picker { gap: 6px; }
 }
+
+.study-overview { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: center; gap: 16px; padding: 14px 16px; border: 1px solid #e4eae2; border-radius: 11px; background: linear-gradient(110deg, #f8fbf7, #fff 70%); }
+.study-overview-due, .study-overview-next { min-width: 0; display: flex; align-items: center; gap: 10px; }
+.study-overview-due .study-stat-icon { background: #edf4ee; color: #52775b; }
+.study-overview-due.has-due .study-stat-icon { background: #e4efe4; color: #376d57; }
+.study-overview-next .study-stat-icon { background: #f0f2f8; color: #6f7e9f; }
+.study-overview-due > div, .study-overview-next > div { min-width: 0; display: grid; gap: 3px; }
+.study-overview-due strong, .study-overview-next strong { overflow: hidden; color: #334138; font: 700 16px/1.2 Manrope, sans-serif; text-overflow: ellipsis; white-space: nowrap; }
+.study-overview-next strong { font-size: 12px; }
+.study-overview-due > div > span:last-child, .study-overview-next > div > span:last-child { overflow: hidden; color: #929991; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.study-overview-subjects { display: inline-flex; align-items: center; gap: 6px; padding-left: 14px; border-left: 1px solid #e9ede7; color: #7a867b; font-size: 9px; white-space: nowrap; }
+.study-filters { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.study-filter-tabs { display: flex; flex-wrap: wrap; gap: 5px; }
+.study-filter-tabs button { min-height: 30px; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: #7e887f; font-size: 9px; font-weight: 600; cursor: pointer; }
+.study-filter-tabs button:hover { background: #f5f7f4; }
+.study-filter-tabs button.selected { border-color: #e0e9df; background: #edf4ed; color: #426d4e; }
+.study-filter-tabs button span { min-width: 17px; height: 17px; display: grid; place-items: center; border-radius: 99px; background: #fff; color: #828b83; font-size: 8px; }
+.study-subject-filter { display: flex; align-items: center; gap: 7px; color: #8a928b; font-size: 9px; }
+.study-subject-filter select { max-width: 150px; height: 30px; padding: 0 7px; border: 1px solid #e6eae4; border-radius: 7px; background: #fff; color: #57635a; font-size: 9px; }
+.study-filter-empty { min-height: 76px; display: flex; align-items: center; justify-content: center; gap: 8px; border: 1px dashed #e1e7df; border-radius: 9px; color: #8b948c; font-size: 10px; }
+.study-filter-empty svg { color: #829787; }
+.study-filter-empty button { padding: 4px; border: 0; background: transparent; color: #467452; font-size: 10px; font-weight: 600; cursor: pointer; }
 
 .discipline-page { display: grid; gap: 22px; }
 .discipline-welcome { margin-bottom: 0; }
@@ -957,4 +990,47 @@ a { color: inherit; text-decoration: none; }
   .my-day-item { min-height: 49px; }
   .my-day-item-copy strong { font-size: 9px; }
   .my-day-status { padding: 4px 5px; }
+}
+
+.focus-panel { grid-template-columns: minmax(0, 1fr) auto; }
+.focus-copy { min-width: 0; }
+.focus-task-actions { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.focus-task-actions .focus-done-button { min-height: 30px; padding: 0 10px; font-size: 9px; }
+.focus-timer { position: relative; z-index: 1; display: flex; align-items: center; gap: 15px; }
+.focus-clock { position: relative; width: 92px; height: 92px; flex: 0 0 92px; display: grid; place-items: center; }
+.focus-clock svg { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); }
+.focus-clock-track, .focus-clock-progress { fill: none; stroke-width: 5; }
+.focus-clock-track { stroke: #ffffff2c; }
+.focus-clock-progress { stroke: #d7edc4; stroke-linecap: round; transition: stroke-dashoffset .4s ease; }
+.focus-clock strong { margin-top: -6px; color: #fff; font: 700 19px/1 Manrope, sans-serif; font-variant-numeric: tabular-nums; letter-spacing: -.5px; }
+.focus-clock > span { position: absolute; top: 57px; color: #cfe0d1; font-size: 7px; font-weight: 700; letter-spacing: 1px; }
+.focus-timer-tools { display: grid; justify-items: start; gap: 7px; }
+.focus-presets { display: flex; gap: 4px; padding: 3px; border: 1px solid #ffffff2b; border-radius: 7px; background: #ffffff0d; }
+.focus-presets button { min-width: 34px; min-height: 23px; padding: 0 5px; border: 0; border-radius: 4px; background: transparent; color: #d6e5d7; font-size: 8px; cursor: pointer; }
+.focus-presets button.selected { background: #ffffffed; color: #315d43; font-weight: 700; }
+.focus-presets button:disabled { opacity: .58; cursor: not-allowed; }
+.focus-timer-buttons { display: flex; gap: 5px; }
+.focus-timer-start, .focus-timer-reset, .focus-break-button { min-height: 30px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid #ffffff55; border-radius: 7px; background: #fff; color: #315d43; font-size: 9px; font-weight: 700; cursor: pointer; }
+.focus-timer-start { padding: 0 10px; }
+.focus-timer-start:disabled { opacity: .55; cursor: not-allowed; }
+.focus-timer-reset { width: 30px; padding: 0; background: #ffffff12; color: #eff5ef; }
+.focus-break-button { min-height: 28px; padding: 0 8px; border-color: #ffffff58; background: #ffffff18; color: #fff; font-size: 8px; }
+.focus-nudge { color: #d1e1d3; font-size: 8px; white-space: nowrap; }
+.task-focus-button { min-height: 28px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 0 8px; border: 1px solid #e1e9e1; border-radius: 7px; background: #f7faf6; color: #57785e; font-size: 9px; font-weight: 600; cursor: pointer; }
+.task-focus-button:hover { border-color: #bad0bc; background: #edf5eb; }
+.my-day-focus { width: 27px; height: 27px; flex: 0 0 27px; display: grid; place-items: center; border: 1px solid #e4ebe2; border-radius: 7px; background: #f7faf6; color: #638269; cursor: pointer; }
+.my-day-focus:hover { border-color: #bad0bc; background: #edf5eb; }
+@media (max-width: 680px) {
+  .focus-panel { grid-template-columns: minmax(0, 1fr); gap: 13px; }
+  .focus-timer { justify-content: space-between; }
+  .focus-clock { width: 82px; height: 82px; flex-basis: 82px; }
+  .focus-clock > span { top: 51px; }
+  .focus-timer-tools { flex: 1; justify-items: end; }
+  .focus-timer-buttons { justify-content: flex-end; }
+  .focus-nudge { font-size: 7px; }
+  .focus-task-actions { margin-top: 8px; }
+  .task-focus-button { width: 29px; padding: 0; }
+  .task-focus-button span { display: none; }
+  .task-card { gap: 7px; }
+  .task-main { flex: 1; }
 }
