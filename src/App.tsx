@@ -190,8 +190,8 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
   async function loadTasks() {
     setLoading(true)
     const [tasksResult, subtasksResult] = await Promise.all([
-      client.from('tasks').select('*').order('due_at', { ascending: true, nullsFirst: false }),
-      client.from('task_subtasks').select('*').order('created_at', { ascending: true }),
+      client.from('tasks').select('id,user_id,title,description,due_at,priority,category,completed_at,created_at').order('due_at', { ascending: true, nullsFirst: false }),
+      client.from('task_subtasks').select('id,user_id,task_id,title,due_at,completed_at,created_at').order('created_at', { ascending: true }),
     ])
     if (tasksResult.error) setError(`Could not load tasks: ${tasksResult.error.message}`)
     else if (subtasksResult.error) setError(`Could not load subtasks: ${subtasksResult.error.message}`)
@@ -213,7 +213,9 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
 
   async function loadStudyReminders() {
     setStudyLoading(true)
-    const fetchReminders = () => client.from('study_reminders').select('*').order('created_at', { ascending: false })
+    const fetchReminders = () => client.from('study_reminders')
+      .select('id,user_id,subject,topic,schedule_type,remind_at,remind_time,days_of_week,completed_on,review_count,enabled,created_at')
+      .order('created_at', { ascending: false })
     let result = await fetchReminders()
     if (result.error && (result.error.code === 'PGRST301' || result.error.message.toLowerCase().includes('jwt expired'))) {
       const { data: refreshData, error: refreshError } = await client.auth.refreshSession()
@@ -239,8 +241,12 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
     const earliest = new Date()
     earliest.setDate(earliest.getDate() - 365)
     const [habitsResult, logsResult] = await Promise.all([
-      client.from('discipline_habits').select('*').order('created_at', { ascending: true }),
-      client.from('discipline_logs').select('*').gte('completed_on', localDateKey(earliest)),
+      client.from('discipline_habits')
+        .select('id,user_id,title,minimum_action,days_of_week,cue_time,active,created_at')
+        .order('created_at', { ascending: true }),
+      client.from('discipline_logs')
+        .select('id,user_id,habit_id,completed_on')
+        .gte('completed_on', localDateKey(earliest)),
     ])
     if (habitsResult.error) setError(`Could not load discipline commitments: ${habitsResult.error.message}`)
     else setDisciplineHabits(habitsResult.data as DisciplineHabit[])
@@ -380,19 +386,19 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
           remind_time: draft.time,
           days_of_week: draft.days_of_week,
         }
-    const { error: saveError } = await client.from('study_reminders').insert({
+    const { data: savedReminder, error: saveError } = await client.from('study_reminders').insert({
       user_id: session.user.id,
       subject: draft.subject.trim(),
       topic: draft.topic.trim(),
       schedule_type: draft.schedule_type,
       ...schedule,
-    })
+    }).select('id,user_id,subject,topic,schedule_type,remind_at,remind_time,days_of_week,completed_on,review_count,enabled,created_at').single()
     if (saveError) {
       setError(`Could not save study reminder: ${saveError.message}`)
       return false
     }
     setError('')
-    await loadStudyReminders()
+    setStudyReminders((current) => [savedReminder as StudyReminder, ...current])
     setStudyDialogOpen(false)
     return true
   }
@@ -435,24 +441,24 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
     if (deleteError) setError(`Could not delete study reminder: ${deleteError.message}`)
     else {
       setError('')
-      await loadStudyReminders()
+      setStudyReminders((current) => current.filter((item) => item.id !== reminder.id))
     }
   }
 
   async function saveDisciplineHabit(draft: DisciplineHabitDraft) {
-    const { error: saveError } = await client.from('discipline_habits').insert({
+    const { data: savedHabit, error: saveError } = await client.from('discipline_habits').insert({
       user_id: session.user.id,
       title: draft.title.trim(),
       minimum_action: draft.minimum_action.trim(),
       days_of_week: draft.days_of_week,
       cue_time: draft.cue_time || null,
-    })
+    }).select('id,user_id,title,minimum_action,days_of_week,cue_time,active,created_at').single()
     if (saveError) {
       setError(`Could not save discipline commitment: ${saveError.message}`)
       return false
     }
     setError('')
-    await loadDisciplineData()
+    setDisciplineHabits((current) => [...current, savedHabit as DisciplineHabit])
     setDisciplineDialogOpen(false)
     return true
   }
@@ -620,11 +626,19 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
     const deleteSubtasksResult = removedSubtaskIds.length
       ? await client.from('task_subtasks').delete().eq('task_id', savedTask.id).in('id', removedSubtaskIds)
       : { error: null }
-    await loadTasks()
     if (deleteSubtasksResult.error) {
+      await loadTasks()
       setError(`Task saved, but could not remove a subtask: ${deleteSubtasksResult.error.message}`)
       return false
     }
+    const savedSubtasks: TaskSubtask[] = subtasks.map((subtask) => ({
+      ...subtask,
+      created_at: editing?.subtasks.find((existing) => existing.id === subtask.id)?.created_at ?? new Date().toISOString(),
+    }))
+    const nextTask: Task = { ...savedTask, subtasks: savedSubtasks }
+    setTasks((current) => editing
+      ? current.map((task) => task.id === savedTask.id ? nextTask : task)
+      : [...current, nextTask])
     setDialogOpen(false)
     setEditing(null)
     setInitialDate('')
@@ -634,7 +648,8 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
   async function toggleTask(task: Task) {
     setBusyId(task.id)
     setError('')
-    const { error: updateError } = await client.from('tasks').update({ completed_at: task.completed_at ? null : new Date().toISOString() }).eq('id', task.id)
+    const completedAt = task.completed_at ? null : new Date().toISOString()
+    const { error: updateError } = await client.from('tasks').update({ completed_at: completedAt }).eq('id', task.id)
     if (updateError) setError(`Could not update task: ${updateError.message}`)
     else {
       if (!task.completed_at) {
@@ -643,7 +658,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
       } else {
         setCompletionMessage('Back on your list. Pick it up when you’re ready.')
       }
-      await loadTasks()
+      setTasks((current) => current.map((item) => item.id === task.id ? { ...item, completed_at: completedAt } : item))
     }
     setBusyId('')
   }
@@ -652,8 +667,9 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
     const busyKey = `subtask:${subtask.id}`
     setBusyId(busyKey)
     setError('')
+    const completedAt = subtask.completed_at ? null : new Date().toISOString()
     const { error: updateError } = await client.from('task_subtasks')
-      .update({ completed_at: subtask.completed_at ? null : new Date().toISOString() })
+      .update({ completed_at: completedAt })
       .eq('id', subtask.id)
       .eq('task_id', task.id)
     if (updateError) setError(`Could not update subtask: ${updateError.message}`)
@@ -661,7 +677,9 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
       setCompletionMessage(subtask.completed_at
         ? 'Subtask back on your list. Pick it up when you’re ready.'
         : 'Subtask complete. One more step forward!')
-      await loadTasks()
+      setTasks((current) => current.map((item) => item.id === task.id
+        ? { ...item, subtasks: item.subtasks.map((entry) => entry.id === subtask.id ? { ...entry, completed_at: completedAt } : entry) }
+        : item))
     }
     setBusyId('')
   }
@@ -672,7 +690,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
     setError('')
     const { error: deleteError } = await client.from('tasks').delete().eq('id', task.id)
     if (deleteError) setError(`Could not delete task: ${deleteError.message}`)
-    else await loadTasks()
+    else setTasks((current) => current.filter((item) => item.id !== task.id))
     setBusyId('')
   }
 
