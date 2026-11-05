@@ -157,6 +157,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
   const [filter, setFilter] = useState<Filter>('all')
   const [priorityFilter, setPriorityFilter] = useState<'all' | Priority>('all')
   const [view, setView] = useState<View>('list')
+  const [calendarView, setCalendarView] = useState<'month' | 'week'>('month')
   const [query, setQuery] = useState('')
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<Task | null>(null)
@@ -823,7 +824,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
           {completionMessage && <div className="completion-toast" role="status"><span className="toast-check"><Check size={15} /></span>{completionMessage}<button onClick={() => setCompletionMessage('')} aria-label="Dismiss message"><X size={15} /></button></div>}
 
           {loading ? <div className="loading-state"><span className="loader" /> Gathering your tasks…</div> : view === 'calendar'
-            ? <CalendarView tasks={tasks} month={calendarMonth} setMonth={setCalendarMonth} onAdd={openNewTask} onEdit={(task) => { setEditing(task); setDialogOpen(true) }} />
+            ? <CalendarView tasks={tasks} studyReminders={activeStudyReminders} month={calendarMonth} setMonth={setCalendarMonth} calendarView={calendarView} setCalendarView={setCalendarView} onAdd={openNewTask} onEdit={(task) => { setEditing(task); setDialogOpen(true) }} onOpenStudy={() => setMode('study')} />
             : <TaskList tasks={filteredTasks} filter={filter} onToggle={toggleTask} onEdit={(task) => { setEditing(task); setDialogOpen(true) }} onDelete={deleteTask} onFocus={selectFocusTask} busyId={busyId} onAdd={() => openNewTask()} />}
           </>}
         </section>
@@ -1583,12 +1584,16 @@ function TaskGroup({ title, tasks, onToggle, onEdit, onDelete, onFocus, busyId }
   </div></section>
 }
 
-function CalendarView({ tasks, month, setMonth, onAdd, onEdit }: {
+function CalendarView({ tasks, studyReminders, month, setMonth, calendarView, setCalendarView, onAdd, onEdit, onOpenStudy }: {
   tasks: Task[]
+  studyReminders: StudyReminder[]
   month: Date
   setMonth: (date: Date) => void
+  calendarView: 'month' | 'week'
+  setCalendarView: (view: 'month' | 'week') => void
   onAdd: (date: string) => void
   onEdit: (task: Task) => void
+  onOpenStudy: () => void
 }) {
   const year = month.getFullYear()
   const monthIndex = month.getMonth()
@@ -1600,8 +1605,8 @@ function CalendarView({ tasks, month, setMonth, onAdd, onEdit }: {
     const day = index - sundayOffset + 1
     return day > 0 && day <= daysInMonth ? new Date(year, monthIndex, day) : null
   })
-  const itemsByDate = new Map<string, { key: string; title: string; completed: boolean; priority: Priority; task: Task; isSubtask: boolean }[]>()
-  function addCalendarItem(date: string, item: { key: string; title: string; completed: boolean; priority: Priority; task: Task; isSubtask: boolean }) {
+  const itemsByDate = new Map<string, { key: string; title: string; completed: boolean; priority: Priority; task: Task; isSubtask: boolean; dueAt: string | null }[]>()
+  function addCalendarItem(date: string, item: { key: string; title: string; completed: boolean; priority: Priority; task: Task; isSubtask: boolean; dueAt: string | null }) {
     const items = itemsByDate.get(date) ?? []
     items.push(item)
     itemsByDate.set(date, items)
@@ -1609,20 +1614,122 @@ function CalendarView({ tasks, month, setMonth, onAdd, onEdit }: {
   tasks.forEach((task) => {
     if (task.due_at) {
       const key = localDateKey(new Date(task.due_at))
-      addCalendarItem(key, { key: task.id, title: task.title, completed: Boolean(task.completed_at), priority: task.priority, task, isSubtask: false })
+      addCalendarItem(key, { key: task.id, title: task.title, completed: Boolean(task.completed_at), priority: task.priority, task, isSubtask: false, dueAt: task.due_at })
     }
     task.subtasks.forEach((subtask) => {
       if (subtask.due_at) {
         const key = localDateKey(new Date(subtask.due_at))
-        addCalendarItem(key, { key: subtask.id, title: subtask.title, completed: Boolean(subtask.completed_at), priority: task.priority, task, isSubtask: true })
+        addCalendarItem(key, { key: subtask.id, title: subtask.title, completed: Boolean(subtask.completed_at), priority: task.priority, task, isSubtask: true, dueAt: subtask.due_at })
       }
     })
   })
   const todayKey = localDateKey(new Date())
+  const weekStart = new Date(year, monthIndex, month.getDate() - month.getDay())
+  const weekDays = Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(weekStart)
+    date.setDate(date.getDate() + index)
+    return date
+  })
+  const weekEnd = weekDays[6]
+  const weekTitle = weekStart.getMonth() === weekEnd.getMonth()
+    ? `${new Intl.DateTimeFormat('en', { month: 'long' }).format(weekStart)} ${weekStart.getDate()}–${weekEnd.getDate()}, ${weekEnd.getFullYear()}`
+    : `${new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric' }).format(weekStart)} – ${new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric' }).format(weekEnd)}`
   const monthTitle = new Intl.DateTimeFormat('en', { month: 'long', year: 'numeric' }).format(month)
+  const title = calendarView === 'week' ? weekTitle : monthTitle
+  const previousPeriod = () => setMonth(calendarView === 'week'
+    ? new Date(year, monthIndex, month.getDate() - 7)
+    : new Date(year, monthIndex - 1, 1))
+  const nextPeriod = () => setMonth(calendarView === 'week'
+    ? new Date(year, monthIndex, month.getDate() + 7)
+    : new Date(year, monthIndex + 1, 1))
+  const weekAgenda = weekDays.map((date) => {
+    const key = localDateKey(date)
+    const dayItems = [
+      ...(itemsByDate.get(key) ?? []).map((item) => ({
+        ...item,
+        description: item.isSubtask ? item.task.title : item.task.category,
+        isStudy: false,
+      })),
+      ...studyReminders.flatMap((reminder) => {
+        const dateMatches = reminder.schedule_type === 'weekly'
+          ? reminder.days_of_week.includes(date.getDay())
+          : Boolean(reminder.remind_at && localDateKey(new Date(reminder.remind_at)) === key)
+        if (!dateMatches) return []
+        const dueAt = reminder.schedule_type === 'weekly'
+          ? (() => {
+              const [hours = '18', minutes = '0'] = (reminder.remind_time ?? '18:00').split(':')
+              return new Date(date.getFullYear(), date.getMonth(), date.getDate(), Number(hours), Number(minutes)).toISOString()
+            })()
+          : reminder.remind_at
+        return [{
+          key: `study-${reminder.id}-${key}`,
+          title: reminder.topic || reminder.subject,
+          description: `${reminder.subject} · ${reminder.schedule_type === 'spaced' ? 'Spaced review' : 'Study session'}`,
+          completed: false,
+          priority: 'low' as Priority,
+          dueAt,
+          isSubtask: false,
+          task: null,
+          isStudy: true,
+        }]
+      }),
+    ].sort((a, b) => {
+      if (!a.dueAt || !b.dueAt) return a.dueAt ? 1 : b.dueAt ? -1 : a.title.localeCompare(b.title)
+      return new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime()
+    })
+    const lanes: number[] = []
+    const timedItems = dayItems.filter((item) => item.dueAt && !(new Date(item.dueAt).getHours() === 0 && new Date(item.dueAt).getMinutes() === 0))
+      .map((item) => {
+        const dateTime = new Date(item.dueAt!)
+        const start = dateTime.getHours() * 60 + dateTime.getMinutes()
+        const availableLane = lanes.findIndex((laneEnd) => laneEnd <= start)
+        const lane = availableLane < 0 ? lanes.length : availableLane
+        lanes[lane] = start + 45
+        return { ...item, start, lane }
+      })
+    const laneCount = Math.max(1, lanes.length)
+    return {
+      date,
+      key,
+      items: dayItems,
+      allDayItems: dayItems.filter((item) => !item.dueAt || (new Date(item.dueAt).getHours() === 0 && new Date(item.dueAt).getMinutes() === 0)),
+      timedItems: timedItems.map((item) => ({ ...item, laneCount })),
+    }
+  })
 
   return <section className="calendar-card">
-    <div className="calendar-heading"><div><h2>{monthTitle}</h2><p>Your time, at a glance.</p></div><div className="calendar-controls"><button className="icon-button" aria-label="Previous month" onClick={() => setMonth(new Date(year, monthIndex - 1, 1))}><ArrowLeft size={17} /></button><button className="today-button" onClick={() => setMonth(new Date())}>Today</button><button className="icon-button" aria-label="Next month" onClick={() => setMonth(new Date(year, monthIndex + 1, 1))}><ArrowRight size={17} /></button></div></div>
+    <div className="calendar-heading"><div><h2>{title}</h2><p>{calendarView === 'week' ? 'Your week, one task at a time.' : 'Your time, at a glance.'}</p></div><div className="calendar-heading-actions"><div className="calendar-period-switch" role="group" aria-label="Calendar period"><button className={calendarView === 'week' ? 'selected' : ''} onClick={() => setCalendarView('week')} aria-pressed={calendarView === 'week'}>Week</button><button className={calendarView === 'month' ? 'selected' : ''} onClick={() => setCalendarView('month')} aria-pressed={calendarView === 'month'}>Month</button></div><div className="calendar-controls"><button className="icon-button" aria-label={`Previous ${calendarView}`} onClick={previousPeriod}><ArrowLeft size={17} /></button><button className="today-button" onClick={() => setMonth(new Date())}>Today</button><button className="icon-button" aria-label={`Next ${calendarView}`} onClick={nextPeriod}><ArrowRight size={17} /></button></div></div></div>
+    {calendarView === 'week' ? <div className="week-calendar-scroll"><div className="week-calendar">
+      <div className="week-calendar-header">
+        <div className="week-timezone">LOCAL TIME</div>
+        {weekAgenda.map(({ date, key, items }) => <div className={`week-day-header ${key === todayKey ? 'today' : ''}`} key={key}>
+          <span>{new Intl.DateTimeFormat('en', { weekday: 'short' }).format(date)}</span>
+          <strong>{date.getDate()}</strong>
+          <small>{items.length} {items.length === 1 ? 'item' : 'items'}</small>
+        </div>)}
+      </div>
+      <div className="week-all-day">
+        <div className="week-all-day-label">all-day</div>
+        {weekAgenda.map(({ date, key, allDayItems }) => <div className={`week-all-day-cell ${key === todayKey ? 'today' : ''}`} key={key}>
+          {allDayItems.map((item) => <button key={item.key} className={`week-agenda-task ${item.isStudy ? 'study' : item.completed ? 'done' : item.priority}`} onClick={item.isStudy ? onOpenStudy : () => item.task && onEdit(item.task)} title={item.title}>{item.title}</button>)}
+          <button className="week-agenda-add" aria-label={`Add task on ${fullDate.format(date)}`} onClick={() => onAdd(`${key}T09:00`)}><Plus size={13} /></button>
+        </div>)}
+      </div>
+      <div className="week-time-grid">
+        <div className="week-time-labels">{Array.from({ length: 24 }, (_, hour) => <span key={hour}>{hour === 0 ? '' : new Intl.DateTimeFormat('en', { hour: 'numeric' }).format(new Date(2000, 0, 1, hour))}</span>)}</div>
+        {weekAgenda.map(({ key, timedItems }) => <div className={`week-time-day ${key === todayKey ? 'today' : ''}`} key={key}>
+          {timedItems.map((item) => {
+            const time = new Date(item.dueAt!)
+            return <button key={item.key} className={`week-agenda-task ${item.isStudy ? 'study' : item.completed ? 'done' : item.priority} ${item.isSubtask ? 'calendar-subtask' : ''}`} style={{ top: `${item.start / 60 * 56}px`, left: `calc(${item.lane * 100 / item.laneCount}% + 2px)`, width: `calc(${100 / item.laneCount}% - 4px)` }} onClick={item.isStudy ? onOpenStudy : () => item.task && onEdit(item.task)} title={item.description ? `${item.description} · ${item.title}` : item.title}>
+              <span className="week-agenda-time">{new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(time)}</span>
+              <span className="week-agenda-task-title">{item.isSubtask && <span aria-hidden="true">↳ </span>}{item.title}</span>
+              {item.description && <span className="week-agenda-task-description">{item.description}</span>}
+              {item.completed && <Check size={12} />}
+            </button>
+          })}
+        </div>)}
+      </div>
+    </div></div> : <>
     <div className="calendar-grid calendar-weekdays">{['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => <div key={day}>{day}</div>)}</div>
     <div className="calendar-grid calendar-days">{cells.map((date, index) => {
       if (!date) return <div className="calendar-cell outside" key={`empty-${index}`} />
@@ -1633,6 +1740,7 @@ function CalendarView({ tasks, month, setMonth, onAdd, onEdit }: {
         <div className="calendar-day-tasks">{dayItems.slice(0, 3).map((item) => <button key={item.key} className={`calendar-task ${item.completed ? 'done' : item.priority} ${item.isSubtask ? 'calendar-subtask' : ''}`} title={item.isSubtask ? `${item.task.title} › ${item.title}` : item.title} onClick={() => onEdit(item.task)}>{item.completed && <Check size={11} />}{item.isSubtask && <span className="calendar-subtask-marker" aria-hidden="true">↳</span>}{item.title}</button>)}{dayItems.length > 3 && <span className="more-tasks">+{dayItems.length - 3} more</span>}</div>
       </div>
     })}</div>
+    </>}
   </section>
 }
 
