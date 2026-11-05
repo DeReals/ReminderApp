@@ -516,9 +516,10 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
       matchesStatus(subtask.completed_at)
       && matchesDate(subtask.due_at ?? task.due_at)
       && (parentMatchesSearch || subtask.title.toLowerCase().includes(search)))
+      .sort((a, b) => compareDueAt(a.due_at ?? task.due_at, b.due_at ?? task.due_at))
     const parentMatches = matchesStatus(task.completed_at) && matchesDate(task.due_at) && parentMatchesSearch
     return parentMatches || visibleSubtasks.length > 0 ? [{ ...task, subtasks: visibleSubtasks }] : []
-  }), [tasks, filter, priorityFilter, query, todayKey, weekStartKey, weekEndKey, monthStartKey, monthEndKey])
+  }).sort((a, b) => compareDueAt(a.due_at, b.due_at)), [tasks, filter, priorityFilter, query, todayKey, weekStartKey, weekEndKey, monthStartKey, monthEndKey])
 
   const pendingCount = tasks.filter((task) => !task.completed_at).length
   const openTasks = tasks.filter((task) => !task.completed_at)
@@ -750,7 +751,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
     return (dueDate && dueDate <= todayKey && !task.completed_at) || completedToday
   }).sort((a, b) => {
     if (Boolean(a.completed_at) !== Boolean(b.completed_at)) return a.completed_at ? 1 : -1
-    return (a.due_at ?? '').localeCompare(b.due_at ?? '')
+    return compareDueAt(a.due_at, b.due_at)
   })
   const todayWeekday = today.getDay()
   const dayStudyReminders = studyReminders.filter((reminder) =>
@@ -759,7 +760,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
     || (reminder.schedule_type !== 'weekly'
       && (reminder.enabled || reminder.schedule_type === 'once')
       && Boolean(reminder.remind_at && localDateKey(new Date(reminder.remind_at)) <= todayKey)),
-  )
+  ).sort((a, b) => getReminderDateForDay(a, today) - getReminderDateForDay(b, today))
   const dayDisciplineHabits = disciplineHabits.filter((habit) => habit.active && habit.days_of_week.includes(todayWeekday))
   const dayDisciplineLogs = disciplineLogs.filter((log) => log.completed_on === todayKey)
 
@@ -1046,6 +1047,11 @@ function StudyDashboard({ reminders, subjects, loading, notificationsSupported, 
   const now = new Date()
   const dueReminders = activeReminders.filter((reminder) =>
     isReminderDue(reminder, now) && !isStudyReminderComplete(reminder, now))
+    .sort((a, b) => {
+      const dateA = getReminderSortDate(a, now)?.getTime() ?? Number.MAX_SAFE_INTEGER
+      const dateB = getReminderSortDate(b, now)?.getTime() ?? Number.MAX_SAFE_INTEGER
+      return dateA - dateB
+    })
   const dueCount = dueReminders.length
   const upcomingCount = activeReminders.filter((reminder) =>
     !isReminderDue(reminder, now) && !isStudyReminderComplete(reminder, now)).length
@@ -1199,6 +1205,20 @@ function StudyReminderDialog({ onClose, onSave }: {
 function formatTime(value: string) {
   const [hours = '0', minutes = '00'] = value.split(':')
   return new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(new Date(2000, 0, 1, Number(hours), Number(minutes)))
+}
+
+function compareDueAt(a: string | null, b: string | null) {
+  if (!a) return b ? 1 : 0
+  if (!b) return -1
+  return new Date(a).getTime() - new Date(b).getTime()
+}
+
+function getReminderDateForDay(reminder: StudyReminder, day: Date) {
+  if (reminder.schedule_type !== 'weekly') {
+    return reminder.remind_at ? new Date(reminder.remind_at).getTime() : Number.MAX_SAFE_INTEGER
+  }
+  const [hours = '18', minutes = '00'] = (reminder.remind_time ?? '18:00').split(':')
+  return new Date(day.getFullYear(), day.getMonth(), day.getDate(), Number(hours), Number(minutes)).getTime()
 }
 
 function isReminderDue(reminder: StudyReminder, now: Date) {
