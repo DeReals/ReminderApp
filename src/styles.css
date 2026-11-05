@@ -122,11 +122,31 @@ a { color: inherit; text-decoration: none; }
 .group-line { height: 1px; flex: 1; background: #e9ebe7; }
 .group-count { min-width: 19px; height: 19px; display: grid; place-items: center; border-radius: 50%; background: #eef0ed; color: #848b85; font-size: 9px; }
 .task-cards { display: grid; gap: 8px; }
-.task-list-item { display: contents; }
+.task-list-item { display: grid; gap: 5px; }
 .task-card { min-height: 76px; display: flex; align-items: center; gap: 13px; padding: 13px 14px; border: 1px solid #eaede9; border-radius: 9px; background: #fff; transition: border-color .15s, box-shadow .15s; }
 .task-card:hover { border-color: #d8e2d9; box-shadow: 0 5px 16px #2b3f3010; }
-.subtask-task-card { min-height: 66px; margin-left: 24px; background: #fbfcfa; }
-.subtask-parent-label { color: #78877c; }
+.subtask-task-card {
+  position: relative;
+  min-height: 66px;
+  padding: 10px 14px;
+  border-color: #edf0eb;
+  border-left: 2px solid #d8e6d9;
+  border-radius: 11px;
+  background: #fbfcfa;
+  box-shadow: none;
+}
+.subtask-task-card:hover { border-color: #d8e2d9; border-left-color: #a9c5ad; background: #fff; box-shadow: 0 3px 10px #2b3f3009; }
+.subtask-task-card .task-check { width: 18px; height: 18px; flex-basis: 18px; }
+.subtask-task-card .task-title { font-size: 12px; }
+.subtask-parent-context { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; overflow: hidden; font-size: 9px; white-space: nowrap; }
+.subtask-label { flex: 0 0 auto; padding: 2px 5px; border-radius: 4px; background: #eef4ed; color: #63806a; font-size: 8px; font-weight: 700; letter-spacing: .35px; text-transform: uppercase; }
+.subtask-parent-name { overflow: hidden; color: #89958b; text-overflow: ellipsis; }
+.subtask-task-card .task-meta { margin-top: 0; }
+.subtask-task-card .priority-pill { min-width: 70px; }
+.task-focus-button, .task-focus-spacer { width: 58px; flex: 0 0 58px; }
+.task-focus-spacer { height: 28px; }
+.task-delete-spacer { width: 27px; height: 27px; flex: 0 0 27px; }
+.delete-task { flex: 0 0 27px; }
 .task-check { flex: 0 0 18px; width: 18px; height: 18px; display: grid; place-items: center; padding: 0; border: 1.5px solid #d5dad5; border-radius: 50%; background: #fff; color: white; cursor: pointer; }
 .task-check:hover { border-color: #80a58c; }
 .task-check.checked { border-color: var(--green); background: var(--green); }
@@ -652,6 +672,7 @@ a { color: inherit; text-decoration: none; }
 .review-done-button { min-height: 30px; flex: 0 0 auto; padding: 0 9px; border: 1px solid #dce8da; border-radius: 7px; background: #f3f8f1; color: #4e7651; font-size: 9px; font-weight: 600; cursor: pointer; }
 .review-done-button:hover:not(:disabled) { border-color: #b7cdbb; background: #edf5eb; }
 .review-done-button:disabled { opacity: .65; cursor: wait; }
+.review-done-button.completed { border-color: #dce8da; background: #edf5eb; color: #56805d; }
 .study-form-intro { margin: -9px 0 15px; color: #89918b; font-size: 10px; line-height: 1.6; }
 .spaced-plan-note { margin: 8px 0 0; color: #627465; font-size: 9px; line-height: 1.6; }
 .study-reminder-modal textarea { min-height: 75px; }
@@ -932,6 +953,7 @@ a { color: inherit; text-decoration: none; }
 .my-day-review { flex: 0 0 auto; min-height: 26px; padding: 0 7px; border: 1px solid #dce8da; border-radius: 6px; background: #f3f8f1; color: #4e7651; font-size: 8px; font-weight: 600; cursor: pointer; }
 .my-day-review:hover:not(:disabled) { border-color: #b7cdbb; background: #edf5eb; }
 .my-day-review:disabled { opacity: .65; cursor: wait; }
+.my-day-review.completed { background: #edf5eb; color: #56805d; }
 .my-day-view-all { display: inline-flex; align-items: center; gap: 5px; margin-top: 8px; padding: 5px 0 0; border: 0; background: transparent; color: #718574; font-size: 8px; font-weight: 600; cursor: pointer; }
 .my-day-view-all:hover { color: #376d57; }
 .my-day-empty { min-height: 71px; display: flex; align-items: center; justify-content: center; gap: 7px; border-top: 1px solid #f0f2ef; color: #929b93; font-size: 8px; }
@@ -1080,7 +1102,10 @@ a { color: inherit; text-decoration: none; }
   .focus-nudge { font-size: 7px; }
   .focus-task-actions { margin-top: 8px; }
   .task-focus-button { width: 29px; padding: 0; }
+  .task-focus-spacer { width: 29px; flex-basis: 29px; }
   .task-focus-button span { display: none; }
+  .task-delete-spacer { width: 22px; flex-basis: 22px; }
+  .delete-task { flex-basis: 22px; }
   .task-card { gap: 7px; }
   .task-main { flex: 1; }
 }

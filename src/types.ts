@@ -48,6 +48,7 @@ export type StudyReminder = {
   remind_at: string | null
   remind_time: string | null
   days_of_week: number[]
+  completed_on: string | null
   review_count: number
   enabled: boolean
   created_at: string

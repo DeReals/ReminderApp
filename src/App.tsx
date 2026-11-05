@@ -167,6 +167,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
   const [reviewingId, setReviewingId] = useState('')
   const [completionMessage, setCompletionMessage] = useState('')
   const [focusTaskId, setFocusTaskId] = useState<string | null>(null)
+  const [focusStudyReminderId, setFocusStudyReminderId] = useState<string | null>(null)
   const [focusDuration, setFocusDuration] = useState(25 * 60)
   const [focusRemaining, setFocusRemaining] = useState(25 * 60)
   const [focusEndsAt, setFocusEndsAt] = useState<number | null>(null)
@@ -393,22 +394,26 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
     }
   }
 
-  async function markStudyReminderReviewed(reminder: StudyReminder) {
-    const nextReviewCount = reminder.review_count + 1
-    const nextReviewDate = new Date()
-    nextReviewDate.setDate(nextReviewDate.getDate() + getNextSpacedIntervalDays(reminder.review_count))
+  async function toggleStudyReminderCompletion(reminder: StudyReminder) {
+    const occurrenceDate = getStudyOccurrenceDate(reminder, new Date())
+    const isComplete = reminder.completed_on === occurrenceDate
+    const updates: Partial<StudyReminder> = { completed_on: isComplete ? null : occurrenceDate }
+    if (!isComplete && reminder.schedule_type === 'spaced') {
+      const nextReviewDate = new Date()
+      nextReviewDate.setDate(nextReviewDate.getDate() + getNextSpacedIntervalDays(reminder.review_count))
+      updates.remind_at = nextReviewDate.toISOString()
+      updates.review_count = reminder.review_count + 1
+    }
     setReviewingId(reminder.id)
-    const { error: updateError } = await client.from('study_reminders').update({
-      remind_at: nextReviewDate.toISOString(),
-      review_count: nextReviewCount,
-    }).eq('id', reminder.id)
+    const { error: updateError } = await client.from('study_reminders').update(updates).eq('id', reminder.id)
     setReviewingId('')
-    if (updateError) setError(`Could not schedule the next study review: ${updateError.message}`)
+    if (updateError) setError(`Could not update study completion: ${updateError.message}`)
     else {
       setError('')
       setStudyReminders((current) => current.map((item) => item.id === reminder.id
-        ? { ...item, remind_at: nextReviewDate.toISOString(), review_count: nextReviewCount }
+        ? { ...item, ...updates }
         : item))
+      setCompletionMessage(isComplete ? 'Study session back on your list.' : 'Study session complete. Nice work!')
     }
   }
 
@@ -526,7 +531,8 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
       const priorityRank: Record<Priority, number> = { high: 0, medium: 1, low: 2 }
       return priorityRank[a.priority] - priorityRank[b.priority]
     })[0]
-  const selectedFocusTask = tasks.find((task) => task.id === focusTaskId) ?? focusTask
+  const selectedFocusTask = focusStudyReminderId ? undefined : tasks.find((task) => task.id === focusTaskId) ?? focusTask
+  const selectedFocusStudyReminder = studyReminders.find((reminder) => reminder.id === focusStudyReminderId)
 
   useEffect(() => {
     if (!focusEndsAt) return
@@ -664,11 +670,23 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
   }
 
   function selectFocusTask(task: Task) {
+    setFocusStudyReminderId(null)
     setFocusTaskId(task.id)
     setFocusPhase('focus')
     setBreakAvailable(false)
     setFocusEndsAt(null)
     setFocusRemaining(focusDuration)
+  }
+
+  function selectFocusStudyReminder(reminder: StudyReminder) {
+    setFocusTaskId(null)
+    setFocusStudyReminderId(reminder.id)
+    setFocusPhase('focus')
+    setBreakAvailable(false)
+    setFocusEndsAt(null)
+    setFocusRemaining(focusDuration)
+    setMode('tasks')
+    setFilter('all')
   }
 
   function setFocusMinutes(minutes: number) {
@@ -723,10 +741,12 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
     return (a.due_at ?? '').localeCompare(b.due_at ?? '')
   })
   const todayWeekday = today.getDay()
-  const dayStudyReminders = activeStudyReminders.filter((reminder) =>
-    reminder.schedule_type === 'weekly'
-      ? reminder.days_of_week.includes(todayWeekday)
-      : Boolean(reminder.remind_at && localDateKey(new Date(reminder.remind_at)) <= todayKey),
+  const dayStudyReminders = studyReminders.filter((reminder) =>
+    (reminder.schedule_type === 'weekly' && reminder.enabled && reminder.days_of_week.includes(todayWeekday))
+    || (reminder.completed_on === todayKey)
+    || (reminder.schedule_type !== 'weekly'
+      && (reminder.enabled || reminder.schedule_type === 'once')
+      && Boolean(reminder.remind_at && localDateKey(new Date(reminder.remind_at)) <= todayKey)),
   )
   const dayDisciplineHabits = disciplineHabits.filter((habit) => habit.active && habit.days_of_week.includes(todayWeekday))
   const dayDisciplineLogs = disciplineLogs.filter((log) => log.completed_on === todayKey)
@@ -779,7 +799,8 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
             onOpenTasks={() => { setMode('tasks'); setFilter('all') }}
             onAddStudy={() => { setMode('study'); setStudyDialogOpen(true) }}
             onOpenStudy={() => setMode('study')}
-            onReview={(reminder) => void markStudyReminderReviewed(reminder)}
+            onFocusStudy={selectFocusStudyReminder}
+            onComplete={(reminder) => void toggleStudyReminderCompletion(reminder)}
             onToggleDiscipline={(habit) => void toggleDisciplineLog(habit)}
             onAddDiscipline={() => { setMode('discipline'); setDisciplineDialogOpen(true) }}
             onOpenDiscipline={() => setMode('discipline')}
@@ -794,7 +815,8 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
             onAdd={() => setStudyDialogOpen(true)}
             onToggle={(reminder) => void toggleStudyReminder(reminder)}
             onDelete={(reminder) => void deleteStudyReminder(reminder)}
-            onReview={(reminder) => void markStudyReminderReviewed(reminder)}
+            onFocus={selectFocusStudyReminder}
+            onComplete={(reminder) => void toggleStudyReminderCompletion(reminder)}
             reviewingId={reviewingId}
           /> : mode === 'discipline' ? <DisciplineDashboard
             habits={disciplineHabits}
@@ -824,6 +846,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
 
           {filter !== 'completed' && <FocusTimerPanel
             task={selectedFocusTask}
+            studyReminder={selectedFocusStudyReminder}
             duration={focusDuration}
             remaining={focusRemaining}
             running={focusEndsAt !== null}
@@ -835,6 +858,9 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
             onStartBreak={startBreak}
             onOpenTask={selectedFocusTask ? () => { setEditing(selectedFocusTask); setDialogOpen(true) } : undefined}
             onCompleteTask={selectedFocusTask ? () => void toggleTask(selectedFocusTask) : undefined}
+            onOpenStudy={selectedFocusStudyReminder ? () => setMode('study') : undefined}
+            onCompleteStudy={selectedFocusStudyReminder ? () => void toggleStudyReminderCompletion(selectedFocusStudyReminder) : undefined}
+            studyBusy={selectedFocusStudyReminder ? reviewingId === selectedFocusStudyReminder.id : false}
             taskBusy={selectedFocusTask ? busyId === selectedFocusTask.id : false}
             onAddTask={() => openNewTask()}
             todayProgress={todayProgress}
@@ -864,7 +890,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
   )
 }
 
-function MyDayDashboard({ date, todayKey, tasks, studyReminders, disciplineHabits, disciplineLogs, loading, busyTaskId, busyDisciplineId, reviewingId, onToggleTask, onOpenTask, onFocusTask, onAddTask, onOpenTasks, onAddStudy, onOpenStudy, onReview, onToggleDiscipline, onAddDiscipline, onOpenDiscipline }: {
+function MyDayDashboard({ date, todayKey, tasks, studyReminders, disciplineHabits, disciplineLogs, loading, busyTaskId, busyDisciplineId, reviewingId, onToggleTask, onOpenTask, onFocusTask, onAddTask, onOpenTasks, onAddStudy, onOpenStudy, onFocusStudy, onComplete, onToggleDiscipline, onAddDiscipline, onOpenDiscipline }: {
   date: Date
   todayKey: string
   tasks: Task[]
@@ -882,15 +908,17 @@ function MyDayDashboard({ date, todayKey, tasks, studyReminders, disciplineHabit
   onOpenTasks: () => void
   onAddStudy: () => void
   onOpenStudy: () => void
-  onReview: (reminder: StudyReminder) => void
+  onFocusStudy: (reminder: StudyReminder) => void
+  onComplete: (reminder: StudyReminder) => void
   onToggleDiscipline: (habit: DisciplineHabit) => void
   onAddDiscipline: () => void
   onOpenDiscipline: () => void
 }) {
   const completedTasks = tasks.filter((task) => task.completed_at)
   const completedHabits = disciplineHabits.filter((habit) => disciplineLogs.some((log) => log.habit_id === habit.id))
-  const totalActions = tasks.length + disciplineHabits.length
-  const completedActions = completedTasks.length + completedHabits.length
+  const totalActions = tasks.length + disciplineHabits.length + studyReminders.length
+  const completedStudySessions = studyReminders.filter((reminder) => isStudyReminderComplete(reminder, date)).length
+  const completedActions = completedTasks.length + completedHabits.length + completedStudySessions
   const progress = totalActions ? Math.round(completedActions / totalActions * 100) : 0
   const circumference = 2 * Math.PI * 39
   const offset = circumference * (1 - progress / 100)
@@ -911,7 +939,7 @@ function MyDayDashboard({ date, todayKey, tasks, studyReminders, disciplineHabit
     </div>
     <section className="my-day-overview">
       <div className="my-day-progress-visual">
-        <svg viewBox="0 0 100 100" role="img" aria-label={`${progress}% of today's tasks and commitments complete`}>
+        <svg viewBox="0 0 100 100" role="img" aria-label={`${progress}% of today's tasks, study sessions, and commitments complete`}>
           <defs><linearGradient id="my-day-progress-gradient" x1="0" x2="1" y1="0" y2="1"><stop offset="0%" stopColor="#8fb493" /><stop offset="100%" stopColor="#477650" /></linearGradient></defs>
           <circle cx="50" cy="50" r="39" className="my-day-ring-track" />
           <circle cx="50" cy="50" r="39" className="my-day-ring-progress" strokeDasharray={circumference} strokeDashoffset={offset} />
@@ -921,10 +949,10 @@ function MyDayDashboard({ date, todayKey, tasks, studyReminders, disciplineHabit
       <div className="my-day-overview-copy">
         <span className="my-day-overview-eyebrow">{totalActions === 0 ? 'FRESH PAGE' : completedActions === totalActions ? 'YOU SHOWED UP' : `${totalActions - completedActions} SMALL ${totalActions - completedActions === 1 ? 'STEP' : 'STEPS'} LEFT`}</span>
         <h2>{totalActions === 0 ? 'A little room to choose what matters.' : completedActions === totalActions ? 'You kept your promises today.' : 'Progress, not pressure.'}</h2>
-        <p>{totalActions === 0 ? 'Your schedule is clear. Add a task or commitment when you’re ready.' : `${completedActions} of ${totalActions} tasks and discipline commitments complete. Study sessions are shown below so you can keep your learning on track too.`}</p>
+        <p>{totalActions === 0 ? 'Your schedule is clear. Add a task or commitment when you’re ready.' : `${completedActions} of ${totalActions} tasks, study sessions, and discipline commitments complete.`}</p>
         <div className="my-day-category-stats">
           <div><span className="my-day-dot task-dot" /><strong>{tasks.filter((task) => !task.completed_at).length}</strong><span>tasks left</span></div>
-          <div><span className="my-day-dot study-dot" /><strong>{studyReminders.length}</strong><span>study sessions</span></div>
+          <div><span className="my-day-dot study-dot" /><strong>{completedStudySessions}/{studyReminders.length}</strong><span>study sessions done</span></div>
           <div><span className="my-day-dot discipline-dot" /><strong>{disciplineHabits.length - completedHabits.length}</strong><span>commitments left</span></div>
           {overdueCount > 0 && <span className="my-day-overdue">{overdueCount} overdue</span>}
         </div>
@@ -932,7 +960,7 @@ function MyDayDashboard({ date, todayKey, tasks, studyReminders, disciplineHabit
       <div className="my-day-progress-bars" aria-label="Progress by area">
         <div><span><i className="task-dot" /> Tasks</span><strong>{tasks.filter((task) => task.completed_at).length}/{tasks.length}</strong><div><i style={{ width: `${tasks.length ? tasks.filter((task) => task.completed_at).length / tasks.length * 100 : 0}%` }} /></div></div>
         <div><span><i className="discipline-dot" /> Discipline</span><strong>{completedHabits.length}/{disciplineHabits.length}</strong><div><i style={{ width: `${disciplineHabits.length ? completedHabits.length / disciplineHabits.length * 100 : 0}%` }} /></div></div>
-        <div><span><i className="study-dot" /> Study sessions</span><strong>{studyReminders.length} planned</strong><button onClick={onOpenStudy}>View study schedule</button></div>
+        <div><span><i className="study-dot" /> Study sessions</span><strong>{completedStudySessions}/{studyReminders.length} done</strong><button onClick={onOpenStudy}>View study schedule</button></div>
       </div>
     </section>
     {loading ? <div className="my-day-loading"><span className="loader" /> Gathering your day…</div> : <div className="my-day-grid">
@@ -953,17 +981,18 @@ function MyDayDashboard({ date, todayKey, tasks, studyReminders, disciplineHabit
       <section className="my-day-section my-day-study">
         <div className="my-day-section-heading"><div><span className="my-day-section-icon study-icon"><BookOpen size={16} /></span><div><h2>Study reminders</h2><p>Sessions scheduled for today</p></div><span className="my-day-section-count study-count">{studyReminders.length}</span></div><button onClick={onAddStudy}><Plus size={15} /> Add</button></div>
         {studyReminders.length ? <div className="my-day-item-list">{studyReminders.map((reminder) => {
-          const due = isReminderDue(reminder, new Date())
-          const date = reminder.remind_at ? localDateKey(new Date(reminder.remind_at)) : todayKey
-          const overdue = reminder.schedule_type !== 'weekly' && date < todayKey
+          const completed = isStudyReminderComplete(reminder, date)
+          const scheduleDate = reminder.remind_at ? localDateKey(new Date(reminder.remind_at)) : todayKey
+          const overdue = reminder.schedule_type !== 'weekly' && scheduleDate < todayKey
           const scheduleLabel = reminder.schedule_type === 'spaced'
             ? `Spaced review ${reminder.review_count + 1}`
             : reminder.schedule_type === 'weekly' ? 'Weekly session' : 'One-time session'
-          return <article className="my-day-item" key={reminder.id}>
+          return <article className={`my-day-item ${completed ? 'item-complete' : ''}`} key={reminder.id}>
             <span className="my-day-time">{reminderTime(reminder)}</span>
             <button className="my-day-item-copy" onClick={onOpenStudy}><strong>{reminder.topic || reminder.subject}</strong><span>{reminder.subject} · {scheduleLabel}</span></button>
             {overdue && <span className="my-day-status overdue-status">Overdue</span>}
-            {reminder.schedule_type === 'spaced' && due && <button className="my-day-review" onClick={() => onReview(reminder)} disabled={reviewingId === reminder.id}>{reviewingId === reminder.id ? 'Saving…' : 'Reviewed'}</button>}
+            <button className="my-day-focus" onClick={() => onFocusStudy(reminder)} aria-label={`Start a focus timer for ${reminder.topic || reminder.subject}`}><Timer size={14} /></button>
+            <button className={`my-day-review ${completed ? 'completed' : ''}`} onClick={() => onComplete(reminder)} disabled={reviewingId === reminder.id || (completed && reminder.schedule_type === 'spaced')}>{reviewingId === reminder.id ? 'Saving…' : completed ? 'Done' : 'Mark complete'}</button>
           </article>
         })}</div> : <div className="my-day-empty"><BookOpen size={17} /><span>No study sessions scheduled today.</span></div>}
         <button className="my-day-view-all" onClick={onOpenStudy}>Open study schedule <ArrowRight size={13} /></button>
@@ -984,7 +1013,7 @@ function MyDayDashboard({ date, todayKey, tasks, studyReminders, disciplineHabit
   </div>
 }
 
-function StudyDashboard({ reminders, subjects, loading, notificationsSupported, notificationPermission, notificationsEnabled, onEnableNotifications, onAdd, onToggle, onDelete, onReview, reviewingId }: {
+function StudyDashboard({ reminders, subjects, loading, notificationsSupported, notificationPermission, notificationsEnabled, onEnableNotifications, onAdd, onToggle, onDelete, onFocus, onComplete, reviewingId }: {
   reminders: StudyReminder[]
   subjects: string[]
   loading: boolean
@@ -995,16 +1024,19 @@ function StudyDashboard({ reminders, subjects, loading, notificationsSupported, 
   onAdd: () => void
   onToggle: (reminder: StudyReminder) => void
   onDelete: (reminder: StudyReminder) => void
-  onReview: (reminder: StudyReminder) => void
+  onFocus: (reminder: StudyReminder) => void
+  onComplete: (reminder: StudyReminder) => void
   reviewingId: string
 }) {
   const [reminderView, setReminderView] = useState<'all' | 'due' | 'upcoming' | 'paused'>('all')
   const [subjectFilter, setSubjectFilter] = useState('all')
   const activeReminders = reminders.filter((reminder) => reminder.enabled)
   const now = new Date()
-  const dueReminders = activeReminders.filter((reminder) => isReminderDue(reminder, now))
+  const dueReminders = activeReminders.filter((reminder) =>
+    isReminderDue(reminder, now) && !isStudyReminderComplete(reminder, now))
   const dueCount = dueReminders.length
-  const upcomingCount = activeReminders.length - dueCount
+  const upcomingCount = activeReminders.filter((reminder) =>
+    !isReminderDue(reminder, now) && !isStudyReminderComplete(reminder, now)).length
   const nextReminder = dueReminders.length
     ? { reminder: dueReminders[0], next: now, isDue: true }
     : activeReminders
@@ -1017,12 +1049,14 @@ function StudyDashboard({ reminders, subjects, loading, notificationsSupported, 
       if (subjectFilter !== 'all' && reminder.subject !== subjectFilter) return false
       if (reminderView === 'paused') return !reminder.enabled
       if (!reminder.enabled) return reminderView === 'all'
-      const due = isReminderDue(reminder, now)
-      return reminderView === 'all' || (reminderView === 'due' ? due : !due)
+      const completed = isStudyReminderComplete(reminder, now)
+      const due = isReminderDue(reminder, now) && !completed
+      return reminderView === 'all' || (reminderView === 'due' ? due : !due && !completed)
     })
     .sort((a, b) => {
       if (a.enabled !== b.enabled) return Number(b.enabled) - Number(a.enabled)
-      const dueDifference = Number(isReminderDue(b, now)) - Number(isReminderDue(a, now))
+      const dueDifference = Number(isReminderDue(b, now) && !isStudyReminderComplete(b, now))
+        - Number(isReminderDue(a, now) && !isStudyReminderComplete(a, now))
       if (dueDifference) return dueDifference
       const dateA = getReminderSortDate(a, now)?.getTime() ?? Number.MAX_SAFE_INTEGER
       const dateB = getReminderSortDate(b, now)?.getTime() ?? Number.MAX_SAFE_INTEGER
@@ -1065,28 +1099,35 @@ function StudyDashboard({ reminders, subjects, loading, notificationsSupported, 
         {subjects.length > 1 && <label className="study-subject-filter"><span>Subject</span><select value={subjectFilter} onChange={(event) => setSubjectFilter(event.target.value)}><option value="all">All subjects</option>{subjects.map((subject) => <option key={subject} value={subject}>{subject}</option>)}</select></label>}
       </div>}
       {loading ? <div className="study-empty"><span className="loader" /> Loading your study schedule…</div>
-        : reminders.length ? visibleReminders.length ? <div className="study-library-list">{visibleReminders.map((reminder) => <StudyReminderRow key={reminder.id} reminder={reminder} onToggle={() => onToggle(reminder)} onDelete={() => onDelete(reminder)} onReview={() => onReview(reminder)} reviewing={reviewingId === reminder.id} />)}</div>
+        : reminders.length ? visibleReminders.length ? <div className="study-library-list">{visibleReminders.map((reminder) => <StudyReminderRow key={reminder.id} reminder={reminder} onToggle={() => onToggle(reminder)} onDelete={() => onDelete(reminder)} onFocus={() => onFocus(reminder)} onComplete={() => onComplete(reminder)} reviewing={reviewingId === reminder.id} />)}</div>
           : <div className="study-filter-empty"><BookOpen size={17} /><span>No sessions match this view.</span><button onClick={() => { setReminderView('all'); setSubjectFilter('all') }}>Show all</button></div>
           : <div className="study-empty"><span className="study-empty-icon"><BookOpen size={21} /></span><h3>Give your classes a place in your week.</h3><p>Schedule a one-time session, a weekly reminder, or a spaced review plan. Your plans will stay here across devices.</p><button className="button button-secondary" onClick={onAdd}><Plus size={16} /> Schedule your first study session</button></div>}
     </section>
   </div>
 }
 
-function StudyReminderRow({ reminder, onToggle, onDelete, onReview, reviewing }: { reminder: StudyReminder; onToggle: () => void; onDelete: () => void; onReview: () => void; reviewing: boolean }) {
+function StudyReminderRow({ reminder, onToggle, onDelete, onFocus, onComplete, reviewing }: { reminder: StudyReminder; onToggle: () => void; onDelete: () => void; onFocus: () => void; onComplete: () => void; reviewing: boolean }) {
   const schedule = reminder.schedule_type !== 'weekly' && reminder.remind_at
     ? new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(reminder.remind_at))
     : `${reminder.days_of_week.map((day) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][day]).join(', ')} · ${formatTime(reminder.remind_time ?? '18:00')}`
-  const due = isReminderDue(reminder, new Date())
+  const now = new Date()
+  const due = isReminderDue(reminder, now)
+  const completed = isStudyReminderComplete(reminder, now)
+  const canComplete = completed || (reminder.schedule_type === 'weekly'
+    ? reminder.enabled && reminder.days_of_week.includes(now.getDay())
+    : isReminderDue(reminder, now) || (reminder.schedule_type === 'once'
+      && Boolean(reminder.remind_at && localDateKey(new Date(reminder.remind_at)) <= localDateKey(now))))
   const intervalDays = getNextSpacedIntervalDays(reminder.review_count)
   const scheduleLabel = reminder.schedule_type === 'weekly'
     ? `Weekly · ${schedule}`
     : reminder.schedule_type === 'spaced'
-      ? `Spaced review ${reminder.review_count + 1} · ${due ? 'Due now' : schedule} · next interval ${intervalDays} ${intervalDays === 1 ? 'day' : 'days'}`
+      ? `Spaced review ${reminder.review_count + 1} · ${due && !completed ? 'Due now' : schedule} · next interval ${intervalDays} ${intervalDays === 1 ? 'day' : 'days'}`
       : `One time · ${schedule}`
   return <article className={`study-library-item ${reminder.enabled ? '' : 'reminder-paused'}`}>
     <span className="study-reminder-row-icon"><BookOpen size={16} /></span>
     <div className="study-reminder-row-main"><span className="study-subject-chip">{reminder.subject}</span><strong>{reminder.topic || 'Study session'}</strong><span className="study-library-schedule">{scheduleLabel}</span></div>
-    {reminder.schedule_type === 'spaced' && reminder.enabled && due && <button className="review-done-button" onClick={onReview} disabled={reviewing}>{reviewing ? 'Saving…' : 'Mark reviewed'}</button>}
+    {reminder.enabled && <button className="task-focus-button" onClick={onFocus} aria-label={`Set a focus timer for ${reminder.topic || reminder.subject}`}><Timer size={14} /><span>Focus</span></button>}
+    {canComplete && <button className={`review-done-button ${completed ? 'completed' : ''}`} onClick={onComplete} disabled={reviewing || (completed && reminder.schedule_type === 'spaced')}>{reviewing ? 'Saving…' : completed ? 'Done' : 'Mark complete'}</button>}
     <button className={`reminder-toggle ${reminder.enabled ? 'on' : ''}`} onClick={onToggle} aria-label={`${reminder.enabled ? 'Pause' : 'Resume'} ${reminder.subject} study reminder`} aria-pressed={reminder.enabled}><span /></button>
     <button className="delete-study-reminder" aria-label={`Delete ${reminder.subject} study reminder`} onClick={onDelete}><X size={16} /></button>
   </article>
@@ -1154,6 +1195,17 @@ function isReminderDue(reminder: StudyReminder, now: Date) {
   const time = reminder.remind_time?.slice(0, 5) ?? '23:59'
   const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
   return reminder.days_of_week.includes(now.getDay()) && currentTime >= time
+}
+
+function getStudyOccurrenceDate(reminder: StudyReminder, now: Date) {
+  if (reminder.schedule_type === 'once' && reminder.remind_at) {
+    return localDateKey(new Date(reminder.remind_at))
+  }
+  return localDateKey(now)
+}
+
+function isStudyReminderComplete(reminder: StudyReminder, now: Date) {
+  return reminder.completed_on === getStudyOccurrenceDate(reminder, now)
 }
 
 function getNextReminderDate(reminder: StudyReminder, now: Date): Date | null {
@@ -1510,8 +1562,9 @@ function PeriodCard({ label, count, detail, selected, icon, onClick }: {
   </button>
 }
 
-function FocusTimerPanel({ task, duration, remaining, running, phase, breakAvailable, onSetMinutes, onToggle, onReset, onStartBreak, onOpenTask, onCompleteTask, taskBusy, onAddTask, todayProgress, todayProgressLabel }: {
+function FocusTimerPanel({ task, studyReminder, duration, remaining, running, phase, breakAvailable, onSetMinutes, onToggle, onReset, onStartBreak, onOpenTask, onCompleteTask, onOpenStudy, onCompleteStudy, studyBusy, taskBusy, onAddTask, todayProgress, todayProgressLabel }: {
   task?: Task
+  studyReminder?: StudyReminder
   duration: number
   remaining: number
   running: boolean
@@ -1523,6 +1576,9 @@ function FocusTimerPanel({ task, duration, remaining, running, phase, breakAvail
   onStartBreak: () => void
   onOpenTask?: () => void
   onCompleteTask?: () => void
+  onOpenStudy?: () => void
+  onCompleteStudy?: () => void
+  studyBusy: boolean
   taskBusy: boolean
   onAddTask: () => void
   todayProgress: number
@@ -1533,15 +1589,24 @@ function FocusTimerPanel({ task, duration, remaining, running, phase, breakAvail
   const offset = circumference * (1 - (timerDuration - remaining) / timerDuration)
   const minutes = Math.floor(remaining / 60).toString().padStart(2, '0')
   const seconds = (remaining % 60).toString().padStart(2, '0')
+  const focusTitle = task?.title ?? (studyReminder ? studyReminder.topic || studyReminder.subject : null)
+  const focusDetails = task
+    ? `${task.due_at ? `Due ${fullDate.format(new Date(task.due_at))}` : 'No due date'} · ${task.priority} priority. For this session, stay with this one thing.`
+    : studyReminder
+      ? `${studyReminder.subject} · A focused Pomodoro for this study session.`
+      : null
 
   return <section className="focus-panel" aria-label="Focus timer">
     <div className="focus-copy">
-      <span className="focus-kicker"><Sparkles size={13} /> {phase === 'break' ? 'REST AND RESET' : 'YOUR NEXT SMALL WIN'}</span>
-      <h2>{task ? task.title : 'Start with one small thing.'}</h2>
-      <p>{phase === 'break' ? 'Step away from your screen, stretch, and come back when the timer ends.' : task ? `${task.due_at ? `Due ${fullDate.format(new Date(task.due_at))}` : 'No due date'} · ${task.priority} priority. For this session, stay with this one thing.` : 'Choose a task below, or add one to begin a focused session.'}</p>
+      <span className="focus-kicker"><Sparkles size={13} /> {phase === 'break' ? 'REST AND RESET' : studyReminder ? 'STUDY FOCUS' : 'YOUR NEXT SMALL WIN'}</span>
+      <h2>{focusTitle ?? 'Start with one small thing.'}</h2>
+      <p>{phase === 'break' ? 'Step away from your screen, stretch, and come back when the timer ends.' : focusDetails ?? 'Choose a task below, or add one to begin a focused session.'}</p>
       {task ? <div className="focus-task-actions">
         <button className="focus-open-button" onClick={onOpenTask}>View task</button>
         {onCompleteTask && <button className="focus-done-button" onClick={onCompleteTask} disabled={taskBusy}><Check size={15} /> Mark done</button>}
+      </div> : studyReminder ? <div className="focus-task-actions">
+        <button className="focus-open-button" onClick={onOpenStudy}>View study schedule</button>
+        {onCompleteStudy && <button className="focus-done-button" onClick={onCompleteStudy} disabled={studyBusy || isStudyReminderComplete(studyReminder, new Date())}><Check size={15} /> {isStudyReminderComplete(studyReminder, new Date()) ? 'Study complete' : 'Mark complete'}</button>}
       </div> : <button className="focus-done-button" onClick={onAddTask}><Plus size={15} /> Add a task</button>}
     </div>
     <div className="focus-timer">
@@ -1558,7 +1623,7 @@ function FocusTimerPanel({ task, duration, remaining, running, phase, breakAvail
           {[15, 25, 50].map((minutesOption) => <button key={minutesOption} className={phase === 'focus' && duration === minutesOption * 60 ? 'selected' : ''} onClick={() => onSetMinutes(minutesOption)} disabled={running || phase === 'break'}>{minutesOption}m</button>)}
         </div>
         <div className="focus-timer-buttons">
-          <button className="focus-timer-start" onClick={onToggle} disabled={!task || (remaining === 0 && !running)} aria-label={running ? 'Pause timer' : 'Start timer'}>{running ? <Pause size={15} /> : <Play size={15} />}{running ? 'Pause' : 'Start focus'}</button>
+          <button className="focus-timer-start" onClick={onToggle} disabled={(!task && !studyReminder) || (remaining === 0 && !running)} aria-label={running ? 'Pause timer' : 'Start timer'}>{running ? <Pause size={15} /> : <Play size={15} />}{running ? 'Pause' : 'Start focus'}</button>
           <button className="focus-timer-reset" onClick={onReset} aria-label="Reset timer"><RotateCcw size={15} /></button>
         </div>
         {breakAvailable && <button className="focus-break-button" onClick={onStartBreak}><Timer size={14} /> Take a 5-minute break</button>}
@@ -1620,14 +1685,15 @@ function TaskGroup({ title, tasks, completed, onToggle, onToggleSubtask, onEdit,
         <button className={`task-check ${completed ? 'checked' : ''}`} aria-label={completed ? `Mark ${task.title} active` : `Complete ${task.title}`} disabled={busyId === task.id} onClick={() => onToggle(task)}>{completed && <Check size={14} />}</button>
         <button className="task-main" onClick={() => onEdit(task)}><span className="task-title">{task.title}</span>{task.description && <span className="task-description">{task.description}</span>}{task.subtasks.length > 0 && <span className="task-description">{task.subtasks.filter((subtask) => subtask.completed_at).length}/{task.subtasks.length} subtasks complete</span>}<span className="task-meta">{task.due_at ? <span className="task-date"><CalendarDays size={13} />{shortDate.format(new Date(task.due_at))}{task.due_at.includes('T') && <> · {new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(new Date(task.due_at))}</>}</span> : <span className="task-date no-date">No due date</span>}{task.category && <span className="category-chip">{task.category}</span>}</span></button>
         <span className={`priority-pill ${task.priority}`}><i />{task.priority}</span>
-        {!completed && <button className="task-focus-button" onClick={() => onFocus(task)} aria-label={`Focus on ${task.title}`}><Timer size={14} /><span>Focus</span></button>}
+        {!completed ? <button className="task-focus-button" onClick={() => onFocus(task)} aria-label={`Focus on ${task.title}`}><Timer size={14} /><span>Focus</span></button> : <span className="task-focus-spacer" aria-hidden="true" />}
         <button className="delete-task" onClick={() => onDelete(task)} aria-label={`Delete ${task.title}`} disabled={busyId === task.id}><X size={16} /></button>
       </article>}
       {task.subtasks.map((subtask) => <article className={`task-card subtask-task-card ${subtask.completed_at ? 'is-completed' : ''}`} key={subtask.id}>
         <button className={`task-check ${subtask.completed_at ? 'checked' : ''}`} aria-label={subtask.completed_at ? `Mark ${subtask.title} active` : `Complete ${subtask.title}`} disabled={busyId === `subtask:${subtask.id}`} onClick={() => onToggleSubtask(task, subtask)}>{subtask.completed_at && <Check size={14} />}</button>
-        <button className="task-main" onClick={() => onEdit(task)}><span className="task-title">{subtask.title}</span><span className="task-description subtask-parent-label">Subtask of {task.title}</span><span className="task-meta">{subtask.due_at ? <span className="task-date"><CalendarDays size={13} />{shortDate.format(new Date(subtask.due_at))}{subtask.due_at.includes('T') && <> · {new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(new Date(subtask.due_at))}</>}</span> : <span className="task-date no-date">No due date</span>}</span></button>
+        <button className="task-main" onClick={() => onEdit(task)}><span className="task-title">{subtask.title}</span><span className="subtask-parent-context"><span className="subtask-label">Subtask</span><span className="subtask-parent-name">of {task.title}</span></span><span className="task-meta">{subtask.due_at ? <span className="task-date"><CalendarDays size={13} />{shortDate.format(new Date(subtask.due_at))}{subtask.due_at.includes('T') && <> · {new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(new Date(subtask.due_at))}</>}</span> : <span className="task-date no-date">No due date</span>}</span></button>
         <span className={`priority-pill ${task.priority}`}><i />{task.priority}</span>
-        {!subtask.completed_at && <button className="task-focus-button" onClick={() => onFocus(task)} aria-label={`Focus on ${subtask.title}`}><Timer size={14} /><span>Focus</span></button>}
+        {!subtask.completed_at ? <button className="task-focus-button" onClick={() => onFocus(task)} aria-label={`Focus on ${subtask.title}`}><Timer size={14} /><span>Focus</span></button> : <span className="task-focus-spacer" aria-hidden="true" />}
+        <span className="task-delete-spacer" aria-hidden="true" />
       </article>)}
     </div>)}
   </div></section>
