@@ -122,8 +122,11 @@ a { color: inherit; text-decoration: none; }
 .group-line { height: 1px; flex: 1; background: #e9ebe7; }
 .group-count { min-width: 19px; height: 19px; display: grid; place-items: center; border-radius: 50%; background: #eef0ed; color: #848b85; font-size: 9px; }
 .task-cards { display: grid; gap: 8px; }
+.task-list-item { display: contents; }
 .task-card { min-height: 76px; display: flex; align-items: center; gap: 13px; padding: 13px 14px; border: 1px solid #eaede9; border-radius: 9px; background: #fff; transition: border-color .15s, box-shadow .15s; }
 .task-card:hover { border-color: #d8e2d9; box-shadow: 0 5px 16px #2b3f3010; }
+.subtask-task-card { min-height: 66px; margin-left: 24px; background: #fbfcfa; }
+.subtask-parent-label { color: #78877c; }
 .task-check { flex: 0 0 18px; width: 18px; height: 18px; display: grid; place-items: center; padding: 0; border: 1.5px solid #d5dad5; border-radius: 50%; background: #fff; color: white; cursor: pointer; }
 .task-check:hover { border-color: #80a58c; }
 .task-check.checked { border-color: var(--green); background: var(--green); }

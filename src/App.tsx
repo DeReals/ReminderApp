@@ -480,17 +480,27 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
     setDisciplineLogs((current) => current.filter((log) => log.habit_id !== habit.id))
   }
 
-  const filteredTasks = useMemo(() => tasks.filter((task) => {
-    const dueDate = task.due_at ? localDateKey(new Date(task.due_at)) : ''
-    const matchesStatus = filter === 'completed'
-      ? Boolean(task.completed_at)
-      : !task.completed_at && (filter === 'all'
+  const filteredTasks = useMemo(() => tasks.flatMap((task) => {
+    const matchesPriority = priorityFilter === 'all' || task.priority === priorityFilter
+    if (!matchesPriority) return []
+    const search = query.toLowerCase()
+    const parentMatchesSearch = `${task.title} ${task.description} ${task.category}`.toLowerCase().includes(search)
+    const matchesDate = (dueAt: string | null) => {
+      const dueDate = dueAt ? localDateKey(new Date(dueAt)) : ''
+      return filter === 'all' || filter === 'completed'
         || (filter === 'today' && dueDate === todayKey)
         || (filter === 'week' && dueDate >= weekStartKey && dueDate <= weekEndKey)
-        || (filter === 'month' && dueDate >= monthStartKey && dueDate <= monthEndKey))
-    const matchesPriority = priorityFilter === 'all' || task.priority === priorityFilter
-    const searchText = `${task.title} ${task.description} ${task.category}`.toLowerCase()
-    return matchesStatus && matchesPriority && searchText.includes(query.toLowerCase())
+        || (filter === 'month' && dueDate >= monthStartKey && dueDate <= monthEndKey)
+    }
+    const matchesStatus = (completedAt: string | null) => filter === 'completed'
+      ? Boolean(completedAt)
+      : Boolean(!completedAt)
+    const visibleSubtasks = task.subtasks.filter((subtask) =>
+      matchesStatus(subtask.completed_at)
+      && matchesDate(subtask.due_at ?? task.due_at)
+      && (parentMatchesSearch || subtask.title.toLowerCase().includes(search)))
+    const parentMatches = matchesStatus(task.completed_at) && matchesDate(task.due_at) && parentMatchesSearch
+    return parentMatches || visibleSubtasks.length > 0 ? [{ ...task, subtasks: visibleSubtasks }] : []
   }), [tasks, filter, priorityFilter, query, todayKey, weekStartKey, weekEndKey, monthStartKey, monthEndKey])
 
   const pendingCount = tasks.filter((task) => !task.completed_at).length
@@ -614,6 +624,24 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
       } else {
         setCompletionMessage('Back on your list. Pick it up when you’re ready.')
       }
+      await loadTasks()
+    }
+    setBusyId('')
+  }
+
+  async function toggleSubtask(task: Task, subtask: TaskSubtask) {
+    const busyKey = `subtask:${subtask.id}`
+    setBusyId(busyKey)
+    setError('')
+    const { error: updateError } = await client.from('task_subtasks')
+      .update({ completed_at: subtask.completed_at ? null : new Date().toISOString() })
+      .eq('id', subtask.id)
+      .eq('task_id', task.id)
+    if (updateError) setError(`Could not update subtask: ${updateError.message}`)
+    else {
+      setCompletionMessage(subtask.completed_at
+        ? 'Subtask back on your list. Pick it up when you’re ready.'
+        : 'Subtask complete. One more step forward!')
       await loadTasks()
     }
     setBusyId('')
@@ -825,7 +853,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
 
           {loading ? <div className="loading-state"><span className="loader" /> Gathering your tasks…</div> : view === 'calendar'
             ? <CalendarView tasks={tasks} studyReminders={activeStudyReminders} month={calendarMonth} setMonth={setCalendarMonth} calendarView={calendarView} setCalendarView={setCalendarView} onAdd={openNewTask} onEdit={(task) => { setEditing(task); setDialogOpen(true) }} onOpenStudy={() => setMode('study')} />
-            : <TaskList tasks={filteredTasks} filter={filter} onToggle={toggleTask} onEdit={(task) => { setEditing(task); setDialogOpen(true) }} onDelete={deleteTask} onFocus={selectFocusTask} busyId={busyId} onAdd={() => openNewTask()} />}
+            : <TaskList tasks={filteredTasks} filter={filter} onToggle={toggleTask} onToggleSubtask={toggleSubtask} onEdit={(task) => { setEditing(task); setDialogOpen(true) }} onDelete={deleteTask} onFocus={selectFocusTask} busyId={busyId} onAdd={() => openNewTask()} />}
           </>}
         </section>
       </main>
@@ -1545,42 +1573,63 @@ function FocusTimerPanel({ task, duration, remaining, running, phase, breakAvail
   </section>
 }
 
-function TaskList({ tasks, filter, onToggle, onEdit, onDelete, onFocus, busyId, onAdd }: {
+function TaskList({ tasks, filter, onToggle, onToggleSubtask, onEdit, onDelete, onFocus, busyId, onAdd }: {
   tasks: Task[]
   filter: Filter
   onToggle: (task: Task) => void
+  onToggleSubtask: (task: Task, subtask: TaskSubtask) => void
   onEdit: (task: Task) => void
   onDelete: (task: Task) => void
   onFocus: (task: Task) => void
   busyId: string
   onAdd: () => void
 }) {
-  const active = tasks.filter((task) => !task.completed_at)
-  const completed = tasks.filter((task) => task.completed_at)
   if (!tasks.length) return <div className="empty-state"><div className="empty-icon"><CheckCheck size={23} /></div><h2>{filter === 'completed' ? 'Nothing checked off just yet.' : 'A little room to breathe.'}</h2><p>{filter === 'completed' ? 'Finished tasks will find a home here.' : 'No tasks match this view. Add one whenever you’re ready.'}</p>{filter !== 'completed' && <button className="button button-secondary" onClick={onAdd}><Plus size={16} /> Add your first task</button>}</div>
   return <div className="task-list-wrap">
-    {active.length > 0 && <TaskGroup title={filter === 'today' ? 'ON YOUR MIND TODAY' : filter === 'week' ? 'DUE THIS WEEK' : filter === 'month' ? 'DUE THIS MONTH' : 'YOUR TASKS'} tasks={active} onToggle={onToggle} onEdit={onEdit} onDelete={onDelete} onFocus={onFocus} busyId={busyId} />}
-    {completed.length > 0 && <TaskGroup title="DONE AND DUSTED" tasks={completed} onToggle={onToggle} onEdit={onEdit} onDelete={onDelete} onFocus={onFocus} busyId={busyId} />}
+    <TaskGroup
+      title={filter === 'completed' ? 'DONE AND DUSTED' : filter === 'today' ? 'ON YOUR MIND TODAY' : filter === 'week' ? 'DUE THIS WEEK' : filter === 'month' ? 'DUE THIS MONTH' : 'YOUR TASKS'}
+      tasks={tasks}
+      completed={filter === 'completed'}
+      onToggle={onToggle}
+      onToggleSubtask={onToggleSubtask}
+      onEdit={onEdit}
+      onDelete={onDelete}
+      onFocus={onFocus}
+      busyId={busyId}
+    />
   </div>
 }
 
-function TaskGroup({ title, tasks, onToggle, onEdit, onDelete, onFocus, busyId }: {
+function TaskGroup({ title, tasks, completed, onToggle, onToggleSubtask, onEdit, onDelete, onFocus, busyId }: {
   title: string
   tasks: Task[]
+  completed: boolean
   onToggle: (task: Task) => void
+  onToggleSubtask: (task: Task, subtask: TaskSubtask) => void
   onEdit: (task: Task) => void
   onDelete: (task: Task) => void
   onFocus: (task: Task) => void
   busyId: string
 }) {
-  return <section className="task-group"><div className="group-heading"><span>{title}</span><span className="group-line" /><span className="group-count">{tasks.length}</span></div><div className="task-cards">
-    {tasks.map((task) => <article className={`task-card ${task.completed_at ? 'is-completed' : ''}`} key={task.id}>
-      <button className={`task-check ${task.completed_at ? 'checked' : ''}`} aria-label={task.completed_at ? `Mark ${task.title} active` : `Complete ${task.title}`} disabled={busyId === task.id} onClick={() => onToggle(task)}>{task.completed_at && <Check size={14} />}</button>
-      <button className="task-main" onClick={() => onEdit(task)}><span className="task-title">{task.title}</span>{task.description && <span className="task-description">{task.description}</span>}{task.subtasks.length > 0 && <span className="task-description">{task.subtasks.filter((subtask) => subtask.completed_at).length}/{task.subtasks.length} subtasks complete</span>}<span className="task-meta">{task.due_at ? <span className="task-date"><CalendarDays size={13} />{shortDate.format(new Date(task.due_at))}{task.due_at.includes('T') && <> · {new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(new Date(task.due_at))}</>}</span> : <span className="task-date no-date">No due date</span>}{task.category && <span className="category-chip">{task.category}</span>}</span></button>
-      <span className={`priority-pill ${task.priority}`}><i />{task.priority}</span>
-      {!task.completed_at && <button className="task-focus-button" onClick={() => onFocus(task)} aria-label={`Focus on ${task.title}`}><Timer size={14} /><span>Focus</span></button>}
-      <button className="delete-task" onClick={() => onDelete(task)} aria-label={`Delete ${task.title}`} disabled={busyId === task.id}><X size={16} /></button>
-    </article>)}
+  const taskCount = tasks.filter((task) => Boolean(task.completed_at) === completed).length
+  const subtaskCount = tasks.reduce((count, task) => count + task.subtasks.length, 0)
+  const count = taskCount + subtaskCount
+  return <section className="task-group"><div className="group-heading"><span>{title}</span><span className="group-line" /><span className="group-count">{count}</span></div><div className="task-cards">
+    {tasks.map((task) => <div className="task-list-item" key={task.id}>
+      {Boolean(task.completed_at) === completed && <article className={`task-card ${completed ? 'is-completed' : ''}`}>
+        <button className={`task-check ${completed ? 'checked' : ''}`} aria-label={completed ? `Mark ${task.title} active` : `Complete ${task.title}`} disabled={busyId === task.id} onClick={() => onToggle(task)}>{completed && <Check size={14} />}</button>
+        <button className="task-main" onClick={() => onEdit(task)}><span className="task-title">{task.title}</span>{task.description && <span className="task-description">{task.description}</span>}{task.subtasks.length > 0 && <span className="task-description">{task.subtasks.filter((subtask) => subtask.completed_at).length}/{task.subtasks.length} subtasks complete</span>}<span className="task-meta">{task.due_at ? <span className="task-date"><CalendarDays size={13} />{shortDate.format(new Date(task.due_at))}{task.due_at.includes('T') && <> · {new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(new Date(task.due_at))}</>}</span> : <span className="task-date no-date">No due date</span>}{task.category && <span className="category-chip">{task.category}</span>}</span></button>
+        <span className={`priority-pill ${task.priority}`}><i />{task.priority}</span>
+        {!completed && <button className="task-focus-button" onClick={() => onFocus(task)} aria-label={`Focus on ${task.title}`}><Timer size={14} /><span>Focus</span></button>}
+        <button className="delete-task" onClick={() => onDelete(task)} aria-label={`Delete ${task.title}`} disabled={busyId === task.id}><X size={16} /></button>
+      </article>}
+      {task.subtasks.map((subtask) => <article className={`task-card subtask-task-card ${subtask.completed_at ? 'is-completed' : ''}`} key={subtask.id}>
+        <button className={`task-check ${subtask.completed_at ? 'checked' : ''}`} aria-label={subtask.completed_at ? `Mark ${subtask.title} active` : `Complete ${subtask.title}`} disabled={busyId === `subtask:${subtask.id}`} onClick={() => onToggleSubtask(task, subtask)}>{subtask.completed_at && <Check size={14} />}</button>
+        <button className="task-main" onClick={() => onEdit(task)}><span className="task-title">{subtask.title}</span><span className="task-description subtask-parent-label">Subtask of {task.title}</span><span className="task-meta">{subtask.due_at ? <span className="task-date"><CalendarDays size={13} />{shortDate.format(new Date(subtask.due_at))}{subtask.due_at.includes('T') && <> · {new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(new Date(subtask.due_at))}</>}</span> : <span className="task-date no-date">No due date</span>}</span></button>
+        <span className={`priority-pill ${task.priority}`}><i />{task.priority}</span>
+        {!subtask.completed_at && <button className="task-focus-button" onClick={() => onFocus(task)} aria-label={`Focus on ${subtask.title}`}><Timer size={14} /><span>Focus</span></button>}
+      </article>)}
+    </div>)}
   </div></section>
 }
 
