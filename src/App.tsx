@@ -143,6 +143,7 @@ function AuthScreen({ client }: { client: SupabaseClient }) {
 type View = 'list' | 'calendar'
 type Filter = 'all' | 'today' | 'week' | 'month' | 'completed'
 type DashboardMode = 'today' | 'tasks' | 'study' | 'discipline'
+type DayTaskItem = { task: Task; subtask: TaskSubtask | null }
 
 function Dashboard({ client, session }: { client: SupabaseClient; session: Session }) {
   const [tasks, setTasks] = useState<Task[]>([])
@@ -784,13 +785,27 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
       : filter === 'month'
         ? monthTasks.length ? `${monthTasks.length} ${monthTasks.length === 1 ? 'task' : 'tasks'} due this month. Plenty of time to make a plan.` : 'A clear month ahead. Add a task whenever you need.'
         : `${pendingCount ? `You've got ${pendingCount} ${pendingCount === 1 ? 'thing' : 'things'} on your list. One step at a time.` : 'A little space to start fresh.'}`
-  const dayTasks = tasks.filter((task) => {
-    const dueDate = task.due_at ? localDateKey(new Date(task.due_at)) : ''
-    const completedToday = task.completed_at && localDateKey(new Date(task.completed_at)) === todayKey
-    return (dueDate && dueDate <= todayKey && !task.completed_at) || completedToday
+  const dayTaskItems = tasks.flatMap((task) => {
+    const isDueTodayOrOverdue = (dueAt: string | null) => {
+      const dueDate = dueAt ? localDateKey(new Date(dueAt)) : ''
+      return Boolean(dueDate && dueDate <= todayKey)
+    }
+    const isVisibleToday = (dueAt: string | null, completedAt: string | null) =>
+      (!completedAt && isDueTodayOrOverdue(dueAt))
+      || Boolean(completedAt && localDateKey(new Date(completedAt)) === todayKey)
+    return [
+      ...(isVisibleToday(task.due_at, task.completed_at) ? [{ task, subtask: null }] : []),
+      ...task.subtasks
+        .filter((subtask) => isVisibleToday(subtask.due_at ?? task.due_at, subtask.completed_at))
+        .map((subtask) => ({ task, subtask })),
+    ]
   }).sort((a, b) => {
-    if (Boolean(a.completed_at) !== Boolean(b.completed_at)) return a.completed_at ? 1 : -1
-    return compareDueAt(a.due_at, b.due_at)
+    const completedA = a.subtask ? a.subtask.completed_at : a.task.completed_at
+    const completedB = b.subtask ? b.subtask.completed_at : b.task.completed_at
+    if (Boolean(completedA) !== Boolean(completedB)) return completedA ? 1 : -1
+    const dueA = a.subtask?.due_at ?? a.task.due_at
+    const dueB = b.subtask?.due_at ?? b.task.due_at
+    return compareDueAt(dueA, dueB)
   })
   const todayWeekday = today.getDay()
   const dayStudyReminders = studyReminders.filter((reminder) =>
@@ -809,7 +824,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
         <a className="brand" href="#"><span className="brand-mark"><Check size={18} /></span> daymark</a>
         <div className="sidebar-label">YOUR SPACE</div>
         <nav className="side-nav">
-          <button className={mode === 'today' ? 'nav-item active' : 'nav-item'} onClick={() => setMode('today')}><CalendarDays size={18} /><span>My day</span><span className="nav-count">{dayTasks.filter((task) => !task.completed_at).length + dayDisciplineHabits.filter((habit) => !dayDisciplineLogs.some((log) => log.habit_id === habit.id)).length}</span></button>
+          <button className={mode === 'today' ? 'nav-item active' : 'nav-item'} onClick={() => setMode('today')}><CalendarDays size={18} /><span>My day</span><span className="nav-count">{dayTaskItems.filter(({ task, subtask }) => !(subtask ? subtask.completed_at : task.completed_at)).length + dayDisciplineHabits.filter((habit) => !dayDisciplineLogs.some((log) => log.habit_id === habit.id)).length}</span></button>
           <button className={mode === 'tasks' && filter === 'all' ? 'nav-item active' : 'nav-item'} onClick={() => { setMode('tasks'); setFilter('all') }}><LayoutList size={18} /><span>All tasks</span><span className="nav-count">{pendingCount}</span></button>
           <button className={mode === 'tasks' && filter === 'today' ? 'nav-item active' : 'nav-item'} onClick={() => { setMode('tasks'); setFilter('today') }}><Clock3 size={18} /><span>Today</span><span className="nav-count">{todayCount}</span></button>
           <button className={mode === 'tasks' && filter === 'week' ? 'nav-item active' : 'nav-item'} onClick={() => { setMode('tasks'); setFilter('week') }}><CalendarDays size={18} /><span>This week</span><span className="nav-count">{weekTasks.length}</span></button>
@@ -836,7 +851,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
           {mode === 'today' ? <MyDayDashboard
             date={today}
             todayKey={todayKey}
-            tasks={dayTasks}
+            taskItems={dayTaskItems}
             studyReminders={dayStudyReminders}
             disciplineHabits={dayDisciplineHabits}
             disciplineLogs={dayDisciplineLogs}
@@ -845,6 +860,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
             busyDisciplineId={disciplineBusyId}
             reviewingId={reviewingId}
             onToggleTask={(task) => void toggleTask(task)}
+            onToggleSubtask={(task, subtask) => void toggleSubtask(task, subtask)}
             onOpenTask={(task) => { setEditing(task); setDialogOpen(true) }}
             onFocusTask={(task) => { selectFocusTask(task); setMode('tasks'); setFilter('all') }}
             onAddTask={() => openNewTask()}
@@ -943,10 +959,10 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
   )
 }
 
-function MyDayDashboard({ date, todayKey, tasks, studyReminders, disciplineHabits, disciplineLogs, loading, busyTaskId, busyDisciplineId, reviewingId, onToggleTask, onOpenTask, onFocusTask, onAddTask, onOpenTasks, onAddStudy, onOpenStudy, onFocusStudy, onComplete, onToggleDiscipline, onAddDiscipline, onOpenDiscipline }: {
+function MyDayDashboard({ date, todayKey, taskItems, studyReminders, disciplineHabits, disciplineLogs, loading, busyTaskId, busyDisciplineId, reviewingId, onToggleTask, onToggleSubtask, onOpenTask, onFocusTask, onAddTask, onOpenTasks, onAddStudy, onOpenStudy, onFocusStudy, onComplete, onToggleDiscipline, onAddDiscipline, onOpenDiscipline }: {
   date: Date
   todayKey: string
-  tasks: Task[]
+  taskItems: DayTaskItem[]
   studyReminders: StudyReminder[]
   disciplineHabits: DisciplineHabit[]
   disciplineLogs: DisciplineLog[]
@@ -955,6 +971,7 @@ function MyDayDashboard({ date, todayKey, tasks, studyReminders, disciplineHabit
   busyDisciplineId: string
   reviewingId: string
   onToggleTask: (task: Task) => void
+  onToggleSubtask: (task: Task, subtask: TaskSubtask) => void
   onOpenTask: (task: Task) => void
   onFocusTask: (task: Task) => void
   onAddTask: () => void
@@ -967,15 +984,21 @@ function MyDayDashboard({ date, todayKey, tasks, studyReminders, disciplineHabit
   onAddDiscipline: () => void
   onOpenDiscipline: () => void
 }) {
-  const completedTasks = tasks.filter((task) => task.completed_at)
+  const completedTasks = taskItems.filter(({ task, subtask }) => subtask ? subtask.completed_at : task.completed_at)
+  const pendingTaskItems = taskItems.filter(({ task, subtask }) => !(subtask ? subtask.completed_at : task.completed_at))
+  const openTaskCount = pendingTaskItems.length
   const completedHabits = disciplineHabits.filter((habit) => disciplineLogs.some((log) => log.habit_id === habit.id))
-  const totalActions = tasks.length + disciplineHabits.length + studyReminders.length
+  const totalActions = taskItems.length + disciplineHabits.length + studyReminders.length
   const completedStudySessions = studyReminders.filter((reminder) => isStudyReminderComplete(reminder, date)).length
   const completedActions = completedTasks.length + completedHabits.length + completedStudySessions
   const progress = totalActions ? Math.round(completedActions / totalActions * 100) : 0
   const circumference = 2 * Math.PI * 39
   const offset = circumference * (1 - progress / 100)
-  const overdueCount = tasks.filter((task) => !task.completed_at && task.due_at && localDateKey(new Date(task.due_at)) < todayKey).length
+  const overdueCount = taskItems.filter(({ task, subtask }) => {
+    const completedAt = subtask ? subtask.completed_at : task.completed_at
+    const dueAt = subtask?.due_at ?? task.due_at
+    return !completedAt && dueAt && localDateKey(new Date(dueAt)) < todayKey
+  }).length
   const greeting = date.getHours() < 12 ? 'Good morning' : date.getHours() < 17 ? 'Good afternoon' : 'Good evening'
 
   function reminderTime(reminder: StudyReminder) {
@@ -1004,29 +1027,33 @@ function MyDayDashboard({ date, todayKey, tasks, studyReminders, disciplineHabit
         <h2>{totalActions === 0 ? 'A little room to choose what matters.' : completedActions === totalActions ? 'You kept your promises today.' : 'Progress, not pressure.'}</h2>
         <p>{totalActions === 0 ? 'Your schedule is clear. Add a task or commitment when you’re ready.' : `${completedActions} of ${totalActions} tasks, study sessions, and discipline commitments complete.`}</p>
         <div className="my-day-category-stats">
-          <div><span className="my-day-dot task-dot" /><strong>{tasks.filter((task) => !task.completed_at).length}</strong><span>tasks left</span></div>
+          <div><span className="my-day-dot task-dot" /><strong>{openTaskCount}</strong><span>tasks left</span></div>
           <div><span className="my-day-dot study-dot" /><strong>{completedStudySessions}/{studyReminders.length}</strong><span>study sessions done</span></div>
           <div><span className="my-day-dot discipline-dot" /><strong>{disciplineHabits.length - completedHabits.length}</strong><span>commitments left</span></div>
           {overdueCount > 0 && <span className="my-day-overdue">{overdueCount} overdue</span>}
         </div>
       </div>
       <div className="my-day-progress-bars" aria-label="Progress by area">
-        <div><span><i className="task-dot" /> Tasks</span><strong>{tasks.filter((task) => task.completed_at).length}/{tasks.length}</strong><div><i style={{ width: `${tasks.length ? tasks.filter((task) => task.completed_at).length / tasks.length * 100 : 0}%` }} /></div></div>
+        <div><span><i className="task-dot" /> Tasks</span><strong>{completedTasks.length}/{taskItems.length}</strong><div><i style={{ width: `${taskItems.length ? completedTasks.length / taskItems.length * 100 : 0}%` }} /></div></div>
         <div><span><i className="discipline-dot" /> Discipline</span><strong>{completedHabits.length}/{disciplineHabits.length}</strong><div><i style={{ width: `${disciplineHabits.length ? completedHabits.length / disciplineHabits.length * 100 : 0}%` }} /></div></div>
         <div><span><i className="study-dot" /> Study sessions</span><strong>{completedStudySessions}/{studyReminders.length} done</strong><button onClick={onOpenStudy}>View study schedule</button></div>
       </div>
     </section>
     {loading ? <div className="my-day-loading"><span className="loader" /> Gathering your day…</div> : <div className="my-day-grid">
       <section className="my-day-section my-day-tasks">
-        <div className="my-day-section-heading"><div><span className="my-day-section-icon task-icon"><CheckCheck size={16} /></span><div><h2>Tasks</h2><p>Due today and anything overdue</p></div><span className="my-day-section-count">{tasks.filter((task) => !task.completed_at).length}</span></div><button onClick={onAddTask}><Plus size={15} /> Add</button></div>
-        {tasks.length ? <div className="my-day-item-list">{tasks.map((task) => {
-          const overdue = Boolean(!task.completed_at && task.due_at && localDateKey(new Date(task.due_at)) < todayKey)
-          return <article className={`my-day-item ${task.completed_at ? 'item-complete' : ''}`} key={task.id}>
-            <button className={`my-day-check ${task.completed_at ? 'checked' : ''}`} aria-label={task.completed_at ? `Undo ${task.title}` : `Complete ${task.title}`} disabled={busyTaskId === task.id} onClick={() => onToggleTask(task)}>{task.completed_at && <Check size={13} />}</button>
-            <button className="my-day-item-copy" onClick={() => onOpenTask(task)}><strong>{task.title}</strong><span>{overdue ? 'Overdue' : task.completed_at ? 'Done today' : task.due_at ? new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(new Date(task.due_at)) : 'Completed today'}</span></button>
-            {!task.completed_at && <button className="my-day-focus" onClick={() => onFocusTask(task)} aria-label={`Focus on ${task.title}`}><Timer size={14} /></button>}
+        <div className="my-day-section-heading"><div><span className="my-day-section-icon task-icon"><CheckCheck size={16} /></span><div><h2>Tasks</h2><p>Due today and anything overdue</p></div><span className="my-day-section-count">{openTaskCount}</span></div><button onClick={onAddTask}><Plus size={15} /> Add</button></div>
+        {pendingTaskItems.length ? <div className="my-day-item-list">{pendingTaskItems.map(({ task, subtask }) => {
+          const title = subtask?.title ?? task.title
+          const completedAt = subtask ? subtask.completed_at : task.completed_at
+          const dueAt = subtask?.due_at ?? task.due_at
+          const overdue = Boolean(!completedAt && dueAt && localDateKey(new Date(dueAt)) < todayKey)
+          const busyKey = subtask ? `subtask:${subtask.id}` : task.id
+          return <article className={`my-day-item ${completedAt ? 'item-complete' : ''}`} key={subtask?.id ?? task.id}>
+            <button className={`my-day-check ${completedAt ? 'checked' : ''}`} aria-label={completedAt ? `Undo ${title}` : `Complete ${title}`} disabled={busyTaskId === busyKey} onClick={() => subtask ? onToggleSubtask(task, subtask) : onToggleTask(task)}>{completedAt && <Check size={13} />}</button>
+            <button className="my-day-item-copy" onClick={() => onOpenTask(task)}><strong>{title}</strong><span>{subtask ? `Subtask of ${task.title} · ` : ''}{overdue ? 'Overdue' : completedAt ? 'Done today' : dueAt ? new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(new Date(dueAt)) : 'Completed today'}</span></button>
+            {!completedAt && <button className="my-day-focus" onClick={() => onFocusTask(task)} aria-label={`Focus on ${title}`}><Timer size={14} /></button>}
             {overdue && <span className="my-day-status overdue-status">Overdue</span>}
-            {task.priority === 'high' && !task.completed_at && <span className="my-day-status priority-status">High</span>}
+            {task.priority === 'high' && !completedAt && <span className="my-day-status priority-status">High</span>}
           </article>
         })}</div> : <div className="my-day-empty"><Check size={17} /><span>No tasks due today. Nice breathing room.</span></div>}
         <button className="my-day-view-all" onClick={onOpenTasks}>Open all tasks <ArrowRight size={13} /></button>
