@@ -174,6 +174,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
   const [focusPhase, setFocusPhase] = useState<'focus' | 'break'>('focus')
   const [breakAvailable, setBreakAvailable] = useState(false)
   const [studyDialogOpen, setStudyDialogOpen] = useState(false)
+  const [editingStudyReminder, setEditingStudyReminder] = useState<StudyReminder | null>(null)
   const [disciplineDialogOpen, setDisciplineDialogOpen] = useState(false)
   const [disciplineBusyId, setDisciplineBusyId] = useState('')
   const [notificationsEnabled, setNotificationsEnabled] = useState(() => typeof Notification !== 'undefined' && Notification.permission === 'granted')
@@ -386,6 +387,26 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
           remind_time: draft.time,
           days_of_week: draft.days_of_week,
         }
+
+    if (editingStudyReminder) {
+      const updates = {
+        subject: draft.subject.trim(),
+        topic: draft.topic.trim(),
+        schedule_type: draft.schedule_type,
+        ...schedule,
+      }
+      const { error: updateError } = await client.from('study_reminders').update(updates).eq('id', editingStudyReminder.id)
+      if (updateError) {
+        setError(`Could not update study reminder: ${updateError.message}`)
+        return false
+      }
+      setError('')
+      setStudyReminders((current) => current.map((item) => item.id === editingStudyReminder.id ? { ...item, ...updates } : item))
+      setEditingStudyReminder(null)
+      setStudyDialogOpen(false)
+      return true
+    }
+
     const { data: savedReminder, error: saveError } = await client.from('study_reminders').insert({
       user_id: session.user.id,
       subject: draft.subject.trim(),
@@ -828,7 +849,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
             onFocusTask={(task) => { selectFocusTask(task); setMode('tasks'); setFilter('all') }}
             onAddTask={() => openNewTask()}
             onOpenTasks={() => { setMode('tasks'); setFilter('all') }}
-            onAddStudy={() => { setMode('study'); setStudyDialogOpen(true) }}
+            onAddStudy={() => { setMode('study'); setEditingStudyReminder(null); setStudyDialogOpen(true) }}
             onOpenStudy={() => setMode('study')}
             onFocusStudy={selectFocusStudyReminder}
             onComplete={(reminder) => void toggleStudyReminderCompletion(reminder)}
@@ -843,7 +864,8 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
             notificationPermission={('Notification' in window) ? Notification.permission : 'unsupported'}
             notificationsEnabled={notificationsEnabled}
             onEnableNotifications={() => void enableStudyNotifications()}
-            onAdd={() => setStudyDialogOpen(true)}
+            onAdd={() => { setEditingStudyReminder(null); setStudyDialogOpen(true) }}
+            onEdit={(reminder) => { setEditingStudyReminder(reminder); setStudyDialogOpen(true) }}
             onToggle={(reminder) => void toggleStudyReminder(reminder)}
             onDelete={(reminder) => void deleteStudyReminder(reminder)}
             onFocus={selectFocusStudyReminder}
@@ -915,7 +937,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
         </section>
       </main>
       {dialogOpen && <TaskDialog task={editing} initialDate={initialDate} onClose={() => { setDialogOpen(false); setEditing(null); setInitialDate('') }} onSave={saveTask} />}
-      {studyDialogOpen && <StudyReminderDialog onClose={() => setStudyDialogOpen(false)} onSave={saveStudyReminder} />}
+      {studyDialogOpen && <StudyReminderDialog reminder={editingStudyReminder} onClose={() => { setStudyDialogOpen(false); setEditingStudyReminder(null) }} onSave={saveStudyReminder} />}
       {disciplineDialogOpen && <DisciplineHabitDialog onClose={() => setDisciplineDialogOpen(false)} onSave={saveDisciplineHabit} />}
     </div>
   )
@@ -1044,7 +1066,7 @@ function MyDayDashboard({ date, todayKey, tasks, studyReminders, disciplineHabit
   </div>
 }
 
-function StudyDashboard({ reminders, subjects, loading, notificationsSupported, notificationPermission, notificationsEnabled, onEnableNotifications, onAdd, onToggle, onDelete, onFocus, onComplete, reviewingId }: {
+function StudyDashboard({ reminders, subjects, loading, notificationsSupported, notificationPermission, notificationsEnabled, onEnableNotifications, onAdd, onEdit, onToggle, onDelete, onFocus, onComplete, reviewingId }: {
   reminders: StudyReminder[]
   subjects: string[]
   loading: boolean
@@ -1053,6 +1075,7 @@ function StudyDashboard({ reminders, subjects, loading, notificationsSupported, 
   notificationsEnabled: boolean
   onEnableNotifications: () => void
   onAdd: () => void
+  onEdit: (reminder: StudyReminder) => void
   onToggle: (reminder: StudyReminder) => void
   onDelete: (reminder: StudyReminder) => void
   onFocus: (reminder: StudyReminder) => void
@@ -1135,14 +1158,14 @@ function StudyDashboard({ reminders, subjects, loading, notificationsSupported, 
         {subjects.length > 1 && <label className="study-subject-filter"><span>Subject</span><select value={subjectFilter} onChange={(event) => setSubjectFilter(event.target.value)}><option value="all">All subjects</option>{subjects.map((subject) => <option key={subject} value={subject}>{subject}</option>)}</select></label>}
       </div>}
       {loading ? <div className="study-empty"><span className="loader" /> Loading your study schedule…</div>
-        : reminders.length ? visibleReminders.length ? <div className="study-library-list">{visibleReminders.map((reminder) => <StudyReminderRow key={reminder.id} reminder={reminder} onToggle={() => onToggle(reminder)} onDelete={() => onDelete(reminder)} onFocus={() => onFocus(reminder)} onComplete={() => onComplete(reminder)} reviewing={reviewingId === reminder.id} />)}</div>
+        : reminders.length ? visibleReminders.length ? <div className="study-library-list">{visibleReminders.map((reminder) => <StudyReminderRow key={reminder.id} reminder={reminder} onEdit={() => onEdit(reminder)} onToggle={() => onToggle(reminder)} onDelete={() => onDelete(reminder)} onFocus={() => onFocus(reminder)} onComplete={() => onComplete(reminder)} reviewing={reviewingId === reminder.id} />)}</div>
           : <div className="study-filter-empty"><BookOpen size={17} /><span>No sessions match this view.</span><button onClick={() => { setReminderView('all'); setSubjectFilter('all') }}>Show all</button></div>
           : <div className="study-empty"><span className="study-empty-icon"><BookOpen size={21} /></span><h3>Give your classes a place in your week.</h3><p>Schedule a one-time session, a weekly reminder, or a spaced review plan. Your plans will stay here across devices.</p><button className="button button-secondary" onClick={onAdd}><Plus size={16} /> Schedule your first study session</button></div>}
     </section>
   </div>
 }
 
-function StudyReminderRow({ reminder, onToggle, onDelete, onFocus, onComplete, reviewing }: { reminder: StudyReminder; onToggle: () => void; onDelete: () => void; onFocus: () => void; onComplete: () => void; reviewing: boolean }) {
+function StudyReminderRow({ reminder, onEdit, onToggle, onDelete, onFocus, onComplete, reviewing }: { reminder: StudyReminder; onEdit: () => void; onToggle: () => void; onDelete: () => void; onFocus: () => void; onComplete: () => void; reviewing: boolean }) {
   const schedule = reminder.schedule_type !== 'weekly' && reminder.remind_at
     ? new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(reminder.remind_at))
     : `${reminder.days_of_week.map((day) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][day]).join(', ')} · ${formatTime(reminder.remind_time ?? '18:00')}`
@@ -1164,21 +1187,25 @@ function StudyReminderRow({ reminder, onToggle, onDelete, onFocus, onComplete, r
     <div className="study-reminder-row-main"><span className="study-subject-chip">{reminder.subject}</span><strong>{reminder.topic || 'Study session'}</strong><span className="study-library-schedule">{scheduleLabel}</span></div>
     {reminder.enabled && <button className="task-focus-button" onClick={onFocus} aria-label={`Set a focus timer for ${reminder.topic || reminder.subject}`}><Timer size={14} /><span>Focus</span></button>}
     {canComplete && <button className={`review-done-button ${completed ? 'completed' : ''}`} onClick={onComplete} disabled={reviewing || (completed && reminder.schedule_type === 'spaced')}>{reviewing ? 'Saving…' : completed ? 'Done' : 'Mark complete'}</button>}
+    <button className="study-edit-button" onClick={onEdit} aria-label={`Edit ${reminder.subject} study reminder`}>Edit</button>
     <button className={`reminder-toggle ${reminder.enabled ? 'on' : ''}`} onClick={onToggle} aria-label={`${reminder.enabled ? 'Pause' : 'Resume'} ${reminder.subject} study reminder`} aria-pressed={reminder.enabled}><span /></button>
     <button className="delete-study-reminder" aria-label={`Delete ${reminder.subject} study reminder`} onClick={onDelete}><X size={16} /></button>
   </article>
 }
 
-function StudyReminderDialog({ onClose, onSave }: {
+function StudyReminderDialog({ reminder, onClose, onSave }: {
+  reminder: StudyReminder | null
   onClose: () => void
   onSave: (draft: StudyReminderDraft) => Promise<boolean>
 }) {
-  const [scheduleType, setScheduleType] = useState<'once' | 'weekly' | 'spaced'>('weekly')
-  const [subject, setSubject] = useState('')
-  const [topic, setTopic] = useState('')
-  const [date, setDate] = useState(localDateKey(new Date()))
-  const [time, setTime] = useState('18:00')
-  const [days, setDays] = useState<number[]>([1, 3, 5])
+  const [scheduleType, setScheduleType] = useState<'once' | 'weekly' | 'spaced'>(reminder?.schedule_type ?? 'weekly')
+  const [subject, setSubject] = useState(reminder?.subject ?? '')
+  const [topic, setTopic] = useState(reminder?.topic ?? '')
+  const [date, setDate] = useState(reminder?.remind_at ? localDateKey(new Date(reminder.remind_at)) : localDateKey(new Date()))
+  const [time, setTime] = useState(reminder?.remind_at && reminder.schedule_type !== 'weekly'
+    ? new Date(reminder.remind_at).toTimeString().slice(0, 5)
+    : (reminder?.remind_time ?? '18:00'))
+  const [days, setDays] = useState<number[]>(reminder?.days_of_week.length ? reminder.days_of_week : [1, 3, 5])
   const [busy, setBusy] = useState(false)
   const [formError, setFormError] = useState('')
 
@@ -1204,7 +1231,7 @@ function StudyReminderDialog({ onClose, onSave }: {
   }
 
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><form className="task-modal study-reminder-modal" onSubmit={(event) => void submit(event)}>
-    <div className="modal-heading"><div><span className="eyebrow"><BellRing size={13} /> MAKE TIME TO REMEMBER</span><h2>Schedule study time</h2></div><button type="button" className="icon-button" aria-label="Close dialog" onClick={onClose}><X size={18} /></button></div>
+    <div className="modal-heading"><div><span className="eyebrow"><BellRing size={13} /> MAKE TIME TO REMEMBER</span><h2>{reminder ? 'Edit study reminder' : 'Schedule study time'}</h2></div><button type="button" className="icon-button" aria-label="Close dialog" onClick={onClose}><X size={18} /></button></div>
     <p className="study-form-intro">Plan focused study sessions for your classes. Choose a weekly routine, a one-time session, or a spaced review plan.</p>
     <label>Class or subject<input autoFocus value={subject} onChange={(event) => setSubject(event.target.value)} placeholder="e.g. Biology, World History" maxLength={60} required /></label>
     <label>What will you study? <span className="optional-label">OPTIONAL</span><input value={topic} onChange={(event) => setTopic(event.target.value)} placeholder="e.g. Review chapter 4 for Friday’s quiz" maxLength={160} /></label>
@@ -1216,7 +1243,7 @@ function StudyReminderDialog({ onClose, onSave }: {
     {scheduleType === 'spaced' && <p className="spaced-plan-note">Your first review starts on this date. Mark it reviewed to schedule follow-ups at 1 day, 3 days, 1 week, 3 weeks, and longer intervals.</p>}
     {formError && <p className="form-error" role="alert">{formError}</p>}
     <div className="study-form-tip"><Sparkles size={14} /><span>{scheduleType === 'spaced' ? 'After each review, mark it complete and Daymark will automatically schedule the next interval.' : 'Short, repeated sessions are easier to stick with than last-minute cramming.'}</span></div>
-    <div className="modal-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={busy}>{busy ? 'Saving…' : 'Save study reminder'} <ArrowRight size={16} /></button></div>
+    <div className="modal-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={busy}>{busy ? 'Saving…' : reminder ? 'Save changes' : 'Save study reminder'} <ArrowRight size={16} /></button></div>
   </form></div>
 }
 

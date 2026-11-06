@@ -669,6 +669,8 @@ a { color: inherit; text-decoration: none; }
 .study-library-list { display: grid; gap: 7px; }
 .study-library-item { display: flex; align-items: center; gap: 10px; padding: 11px 12px; border: 1px solid #e9ece7; border-radius: 9px; background: #fff; }
 .study-library-schedule { color: #959c95; font-size: 9px; }
+.study-edit-button { min-height: 30px; flex: 0 0 auto; padding: 0 9px; border: 1px solid #dfe7df; border-radius: 7px; background: #f8faf7; color: #506b5d; font-size: 9px; font-weight: 600; cursor: pointer; }
+.study-edit-button:hover { border-color: #bfd1c2; background: #edf5ee; }
 .review-done-button { min-height: 30px; flex: 0 0 auto; padding: 0 9px; border: 1px solid #dce8da; border-radius: 7px; background: #f3f8f1; color: #4e7651; font-size: 9px; font-weight: 600; cursor: pointer; }
 .review-done-button:hover:not(:disabled) { border-color: #b7cdbb; background: #edf5eb; }
 .review-done-button:disabled { opacity: .65; cursor: wait; }
