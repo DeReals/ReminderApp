@@ -951,6 +951,9 @@ a { color: inherit; text-decoration: none; }
 .my-day-status { flex: 0 0 auto; padding: 4px 6px; border-radius: 999px; font-size: 7px; font-weight: 600; }
 .overdue-status { background: #fff0ee; color: #a74d45; }
 .priority-status { background: #fff7e9; color: #987139; }
+.priority-status.high-priority { background: #fcf0ed; color: #bd665d; }
+.priority-status.medium-priority { background: #faf4e9; color: #a47d3e; }
+.priority-status.low-priority { background: #eef5ef; color: #6e9577; }
 .done-status { background: #eef5ed; color: #54805a; }
 .my-day-review { flex: 0 0 auto; min-height: 26px; padding: 0 7px; border: 1px solid #dce8da; border-radius: 6px; background: #f3f8f1; color: #4e7651; font-size: 8px; font-weight: 600; cursor: pointer; }
 .my-day-review:hover:not(:disabled) { border-color: #b7cdbb; background: #edf5eb; }
@@ -1094,6 +1097,7 @@ a { color: inherit; text-decoration: none; }
 .task-focus-button:hover { border-color: #bad0bc; background: #edf5eb; }
 .my-day-focus { width: 27px; height: 27px; flex: 0 0 27px; display: grid; place-items: center; border: 1px solid #e4ebe2; border-radius: 7px; background: #f7faf6; color: #638269; cursor: pointer; }
 .my-day-focus:hover { border-color: #bad0bc; background: #edf5eb; }
+.my-day-focus.my-day-task-focus { width: auto; flex-basis: auto; display: inline-flex; gap: 5px; padding: 0 8px; color: #57785e; font-size: 8px; font-weight: 600; white-space: nowrap; }
 @media (max-width: 680px) {
   .focus-panel { grid-template-columns: minmax(0, 1fr); gap: 13px; }
   .focus-timer { justify-content: space-between; }
@@ -1106,6 +1110,8 @@ a { color: inherit; text-decoration: none; }
   .task-focus-button { width: 29px; padding: 0; }
   .task-focus-spacer { width: 29px; flex-basis: 29px; }
   .task-focus-button span { display: none; }
+  .my-day-task-focus { width: 27px !important; flex-basis: 27px !important; padding: 0 !important; justify-content: center; }
+  .my-day-task-focus span { display: none; }
   .task-delete-spacer { width: 22px; flex-basis: 22px; }
   .delete-task { flex-basis: 22px; }
   .task-card { gap: 7px; }
