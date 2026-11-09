@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
 import type { Session, SupabaseClient } from '@supabase/supabase-js'
 import {
   ArrowLeft,
@@ -158,7 +158,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
   const [filter, setFilter] = useState<Filter>('all')
   const [priorityFilter, setPriorityFilter] = useState<'all' | Priority>('all')
   const [view, setView] = useState<View>('list')
-  const [calendarView, setCalendarView] = useState<'month' | 'week'>('month')
+  const [calendarView, setCalendarView] = useState<'month' | 'week'>('week')
   const [query, setQuery] = useState('')
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<Task | null>(null)
@@ -176,6 +176,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
   const [breakAvailable, setBreakAvailable] = useState(false)
   const [studyDialogOpen, setStudyDialogOpen] = useState(false)
   const [editingStudyReminder, setEditingStudyReminder] = useState<StudyReminder | null>(null)
+  const [initialReminderDateTime, setInitialReminderDateTime] = useState('')
   const [disciplineDialogOpen, setDisciplineDialogOpen] = useState(false)
   const [disciplineBusyId, setDisciplineBusyId] = useState('')
   const [notificationsEnabled, setNotificationsEnabled] = useState(() => typeof Notification !== 'undefined' && Notification.permission === 'granted')
@@ -216,7 +217,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
   async function loadStudyReminders() {
     setStudyLoading(true)
     const fetchReminders = () => client.from('study_reminders')
-      .select('id,user_id,subject,topic,schedule_type,remind_at,remind_time,days_of_week,completed_on,review_count,enabled,created_at')
+      .select('id,user_id,subject,topic,schedule_type,remind_at,remind_time,remind_end_time,days_of_week,completed_on,review_count,enabled,created_at')
       .order('created_at', { ascending: false })
     let result = await fetchReminders()
     if (result.error && (result.error.code === 'PGRST301' || result.error.message.toLowerCase().includes('jwt expired'))) {
@@ -381,11 +382,13 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
       ? {
           remind_at: new Date(`${draft.date}T${draft.time}`).toISOString(),
           remind_time: null,
+          remind_end_time: draft.end_time,
           days_of_week: [],
         }
       : {
           remind_at: null,
           remind_time: draft.time,
+          remind_end_time: draft.end_time,
           days_of_week: draft.days_of_week,
         }
 
@@ -414,7 +417,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
       topic: draft.topic.trim(),
       schedule_type: draft.schedule_type,
       ...schedule,
-    }).select('id,user_id,subject,topic,schedule_type,remind_at,remind_time,days_of_week,completed_on,review_count,enabled,created_at').single()
+    }).select('id,user_id,subject,topic,schedule_type,remind_at,remind_time,remind_end_time,days_of_week,completed_on,review_count,enabled,created_at').single()
     if (saveError) {
       setError(`Could not save study reminder: ${saveError.message}`)
       return false
@@ -722,6 +725,12 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
     setDialogOpen(true)
   }
 
+  function openNewStudyReminder(dateTime = '') {
+    setEditingStudyReminder(null)
+    setInitialReminderDateTime(dateTime)
+    setStudyDialogOpen(true)
+  }
+
   function selectFocusTask(task: Task) {
     setFocusStudyReminderId(null)
     setFocusTaskId(task.id)
@@ -865,7 +874,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
             onFocusTask={(task) => { selectFocusTask(task); setMode('tasks'); setFilter('all') }}
             onAddTask={() => openNewTask()}
             onOpenTasks={() => { setMode('tasks'); setFilter('all') }}
-            onAddStudy={() => { setMode('study'); setEditingStudyReminder(null); setStudyDialogOpen(true) }}
+            onAddStudy={() => { setMode('study'); openNewStudyReminder() }}
             onOpenStudy={() => setMode('study')}
             onFocusStudy={selectFocusStudyReminder}
             onComplete={(reminder) => void toggleStudyReminderCompletion(reminder)}
@@ -880,8 +889,8 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
             notificationPermission={('Notification' in window) ? Notification.permission : 'unsupported'}
             notificationsEnabled={notificationsEnabled}
             onEnableNotifications={() => void enableStudyNotifications()}
-            onAdd={() => { setEditingStudyReminder(null); setStudyDialogOpen(true) }}
-            onEdit={(reminder) => { setEditingStudyReminder(reminder); setStudyDialogOpen(true) }}
+            onAdd={() => openNewStudyReminder()}
+            onEdit={(reminder) => { setEditingStudyReminder(reminder); setInitialReminderDateTime(''); setStudyDialogOpen(true) }}
             onToggle={(reminder) => void toggleStudyReminder(reminder)}
             onDelete={(reminder) => void deleteStudyReminder(reminder)}
             onFocus={selectFocusStudyReminder}
@@ -938,22 +947,28 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
 
           {!loading && <DashboardCharts tasks={tasks} weekStart={weekStart} />}
 
-          <div className="toolbar">
+          <div className={`toolbar ${view === 'calendar' ? 'calendar-toolbar' : ''}`}>
             <div className="view-switch"><button className={view === 'list' ? 'view-tab selected' : 'view-tab'} onClick={() => setView('list')}><LayoutList size={16} /> List</button><button className={view === 'calendar' ? 'view-tab selected' : 'view-tab'} onClick={() => setView('calendar')}><CalendarDays size={16} /> Calendar</button></div>
-            <label className="search-box"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search tasks…" /></label>
-            <label className="priority-select"><SlidersHorizontal size={15} /><select value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value as 'all' | Priority)} aria-label="Filter by priority"><option value="all">All priorities</option><option value="high">High priority</option><option value="medium">Medium priority</option><option value="low">Low priority</option></select><ChevronDown size={14} /></label>
+            {view === 'list' && <>
+              <label className="search-box"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search tasks…" /></label>
+              <label className="priority-select"><SlidersHorizontal size={15} /><select value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value as 'all' | Priority)} aria-label="Filter by priority"><option value="all">All priorities</option><option value="high">High priority</option><option value="medium">Medium priority</option><option value="low">Low priority</option></select><ChevronDown size={14} /></label>
+            </>}
           </div>
 
           {completionMessage && <div className="completion-toast" role="status"><span className="toast-check"><Check size={15} /></span>{completionMessage}<button onClick={() => setCompletionMessage('')} aria-label="Dismiss message"><X size={15} /></button></div>}
 
-          {loading ? <div className="loading-state"><span className="loader" /> Gathering your tasks…</div> : view === 'calendar'
-            ? <CalendarView tasks={tasks} studyReminders={activeStudyReminders} month={calendarMonth} setMonth={setCalendarMonth} calendarView={calendarView} setCalendarView={setCalendarView} onAdd={openNewTask} onEdit={(task) => { setEditing(task); setDialogOpen(true) }} onOpenStudy={() => setMode('study')} />
-            : <TaskList tasks={filteredTasks} filter={filter} onToggle={toggleTask} onToggleSubtask={toggleSubtask} onEdit={(task) => { setEditing(task); setDialogOpen(true) }} onDelete={deleteTask} onFocus={selectFocusTask} busyId={busyId} onAdd={() => openNewTask()} />}
+          {view === 'calendar'
+            ? studyLoading
+              ? <div className="loading-state"><span className="loader" /> Loading your reminders…</div>
+              : <CalendarView studyReminders={activeStudyReminders} month={calendarMonth} setMonth={setCalendarMonth} calendarView={calendarView} setCalendarView={setCalendarView} onAdd={openNewStudyReminder} onEdit={(reminder) => { setEditingStudyReminder(reminder); setInitialReminderDateTime(''); setStudyDialogOpen(true) }} />
+            : loading
+              ? <div className="loading-state"><span className="loader" /> Gathering your tasks…</div>
+              : <TaskList tasks={filteredTasks} filter={filter} onToggle={toggleTask} onToggleSubtask={toggleSubtask} onEdit={(task) => { setEditing(task); setDialogOpen(true) }} onDelete={deleteTask} onFocus={selectFocusTask} busyId={busyId} onAdd={() => openNewTask()} />}
           </>}
         </section>
       </main>
       {dialogOpen && <TaskDialog task={editing} initialDate={initialDate} onClose={() => { setDialogOpen(false); setEditing(null); setInitialDate('') }} onSave={saveTask} />}
-      {studyDialogOpen && <StudyReminderDialog reminder={editingStudyReminder} onClose={() => { setStudyDialogOpen(false); setEditingStudyReminder(null) }} onSave={saveStudyReminder} />}
+      {studyDialogOpen && <StudyReminderDialog reminder={editingStudyReminder} initialDateTime={initialReminderDateTime} onClose={() => { setStudyDialogOpen(false); setEditingStudyReminder(null); setInitialReminderDateTime('') }} onSave={saveStudyReminder} />}
       {disciplineDialogOpen && <DisciplineHabitDialog onClose={() => setDisciplineDialogOpen(false)} onSave={saveDisciplineHabit} />}
     </div>
   )
@@ -1193,9 +1208,14 @@ function StudyDashboard({ reminders, subjects, loading, notificationsSupported, 
 }
 
 function StudyReminderRow({ reminder, onEdit, onToggle, onDelete, onFocus, onComplete, reviewing }: { reminder: StudyReminder; onEdit: () => void; onToggle: () => void; onDelete: () => void; onFocus: () => void; onComplete: () => void; reviewing: boolean }) {
+  const startTime = reminder.schedule_type === 'weekly'
+    ? reminder.remind_time?.slice(0, 5) ?? '18:00'
+    : reminder.remind_at ? new Date(reminder.remind_at).toTimeString().slice(0, 5) : '18:00'
+  const endTime = reminder.remind_end_time?.slice(0, 5) ?? getDefaultStudyEndTime(startTime)
+  const timeRange = `${formatTime(startTime)}–${formatTime(endTime)}${endTime <= startTime ? ' (+1 day)' : ''}`
   const schedule = reminder.schedule_type !== 'weekly' && reminder.remind_at
-    ? new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(reminder.remind_at))
-    : `${reminder.days_of_week.map((day) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][day]).join(', ')} · ${formatTime(reminder.remind_time ?? '18:00')}`
+    ? `${new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date(reminder.remind_at))} · ${timeRange}`
+    : `${reminder.days_of_week.map((day) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][day]).join(', ')} · ${timeRange}`
   const now = new Date()
   const due = isReminderDue(reminder, now)
   const completed = isStudyReminderComplete(reminder, now)
@@ -1220,18 +1240,22 @@ function StudyReminderRow({ reminder, onEdit, onToggle, onDelete, onFocus, onCom
   </article>
 }
 
-function StudyReminderDialog({ reminder, onClose, onSave }: {
+function StudyReminderDialog({ reminder, initialDateTime, onClose, onSave }: {
   reminder: StudyReminder | null
+  initialDateTime: string
   onClose: () => void
   onSave: (draft: StudyReminderDraft) => Promise<boolean>
 }) {
-  const [scheduleType, setScheduleType] = useState<'once' | 'weekly' | 'spaced'>(reminder?.schedule_type ?? 'weekly')
+  const [initialDate, initialTime] = initialDateTime.split('T')
+  const [scheduleType, setScheduleType] = useState<'once' | 'weekly' | 'spaced'>(reminder?.schedule_type ?? (initialDateTime ? 'once' : 'weekly'))
   const [subject, setSubject] = useState(reminder?.subject ?? '')
   const [topic, setTopic] = useState(reminder?.topic ?? '')
-  const [date, setDate] = useState(reminder?.remind_at ? localDateKey(new Date(reminder.remind_at)) : localDateKey(new Date()))
-  const [time, setTime] = useState(reminder?.remind_at && reminder.schedule_type !== 'weekly'
+  const [date, setDate] = useState(reminder?.remind_at ? localDateKey(new Date(reminder.remind_at)) : initialDate || localDateKey(new Date()))
+  const initialStartTime = reminder?.remind_at && reminder.schedule_type !== 'weekly'
     ? new Date(reminder.remind_at).toTimeString().slice(0, 5)
-    : (reminder?.remind_time ?? '18:00'))
+    : (reminder?.remind_time ?? initialTime ?? '18:00')
+  const [time, setTime] = useState(initialStartTime)
+  const [endTime, setEndTime] = useState(reminder?.remind_end_time?.slice(0, 5) ?? getDefaultStudyEndTime(initialStartTime))
   const [days, setDays] = useState<number[]>(reminder?.days_of_week.length ? reminder.days_of_week : [1, 3, 5])
   const [busy, setBusy] = useState(false)
   const [formError, setFormError] = useState('')
@@ -1246,27 +1270,31 @@ function StudyReminderDialog({ reminder, onClose, onSave }: {
       setFormError('Choose at least one day for your weekly study reminder.')
       return
     }
+    if (endTime === time) {
+      setFormError('Choose a different end time. An earlier end time will schedule the reminder overnight.')
+      return
+    }
     if (scheduleType !== 'weekly' && new Date(`${date}T${time}`).getTime() <= Date.now()) {
       setFormError('Choose a first study time in the future.')
       return
     }
     setFormError('')
     setBusy(true)
-    const saved = await onSave({ subject, topic, schedule_type: scheduleType, date, time, days_of_week: days })
+    const saved = await onSave({ subject, topic, schedule_type: scheduleType, date, time, end_time: endTime, days_of_week: days })
     setBusy(false)
     if (saved) onClose()
   }
 
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><form className="task-modal study-reminder-modal" onSubmit={(event) => void submit(event)}>
     <div className="modal-heading"><div><span className="eyebrow"><BellRing size={13} /> MAKE TIME TO REMEMBER</span><h2>{reminder ? 'Edit study reminder' : 'Schedule study time'}</h2></div><button type="button" className="icon-button" aria-label="Close dialog" onClick={onClose}><X size={18} /></button></div>
-    <p className="study-form-intro">Plan focused study sessions for your classes. Choose a weekly routine, a one-time session, or a spaced review plan.</p>
+    <p className="study-form-intro">Plan focused study sessions for your classes. Set a start and end time, then choose a weekly routine, one-time session, or spaced review plan.</p>
     <label>Class or subject<input autoFocus value={subject} onChange={(event) => setSubject(event.target.value)} placeholder="e.g. Biology, World History" maxLength={60} required /></label>
     <label>What will you study? <span className="optional-label">OPTIONAL</span><input value={topic} onChange={(event) => setTopic(event.target.value)} placeholder="e.g. Review chapter 4 for Friday’s quiz" maxLength={160} /></label>
     <label>Study plan<select value={scheduleType} onChange={(event) => setScheduleType(event.target.value as 'once' | 'weekly' | 'spaced')}><option value="weekly">Every week</option><option value="once">One time</option><option value="spaced">Spaced repetition</option></select></label>
     {scheduleType === 'weekly' && <fieldset className="study-day-picker"><legend>Study on</legend>{[['M', 1], ['T', 2], ['W', 3], ['T', 4], ['F', 5], ['S', 6], ['S', 0]].map(([label, day], index) => <button key={`${day}-${index}`} type="button" className={days.includes(Number(day)) ? 'study-day selected' : 'study-day'} aria-pressed={days.includes(Number(day))} onClick={() => toggleDay(Number(day))}>{label}</button>)}</fieldset>}
     {scheduleType === 'weekly'
-      ? <label>Reminder time<input type="time" value={time} onChange={(event) => setTime(event.target.value)} required /></label>
-      : <div className="form-row"><label>Date<input type="date" min={localDateKey(new Date())} value={date} onChange={(event) => setDate(event.target.value)} required /></label><label>Time<input type="time" value={time} onChange={(event) => setTime(event.target.value)} required /></label></div>}
+      ? <div className="form-row"><label>Start time<input type="time" value={time} onChange={(event) => { setTime(event.target.value); if (endTime <= event.target.value) setEndTime(getDefaultStudyEndTime(event.target.value)) }} required /></label><label>End time<input type="time" value={endTime} onChange={(event) => setEndTime(event.target.value)} required /></label></div>
+      : <><label>Date<input type="date" min={localDateKey(new Date())} value={date} onChange={(event) => setDate(event.target.value)} required /></label><div className="form-row"><label>Start time<input type="time" value={time} onChange={(event) => { setTime(event.target.value); if (endTime <= event.target.value) setEndTime(getDefaultStudyEndTime(event.target.value)) }} required /></label><label>End time<input type="time" value={endTime} onChange={(event) => setEndTime(event.target.value)} required /></label></div></>}
     {scheduleType === 'spaced' && <p className="spaced-plan-note">Your first review starts on this date. Mark it reviewed to schedule follow-ups at 1 day, 3 days, 1 week, 3 weeks, and longer intervals.</p>}
     {formError && <p className="form-error" role="alert">{formError}</p>}
     <div className="study-form-tip"><Sparkles size={14} /><span>{scheduleType === 'spaced' ? 'After each review, mark it complete and Daymark will automatically schedule the next interval.' : 'Short, repeated sessions are easier to stick with than last-minute cramming.'}</span></div>
@@ -1277,6 +1305,12 @@ function StudyReminderDialog({ reminder, onClose, onSave }: {
 function formatTime(value: string) {
   const [hours = '0', minutes = '00'] = value.split(':')
   return new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(new Date(2000, 0, 1, Number(hours), Number(minutes)))
+}
+
+function getDefaultStudyEndTime(startTime: string) {
+  const [hours = '18', minutes = '00'] = startTime.split(':')
+  const endMinutes = (Number(hours) * 60 + Number(minutes) + 45) % (24 * 60)
+  return `${String(Math.floor(endMinutes / 60)).padStart(2, '0')}:${String(endMinutes % 60).padStart(2, '0')}`
 }
 
 function compareDueAt(a: string | null, b: string | null) {
@@ -1803,19 +1837,18 @@ function TaskGroup({ title, tasks, completed, onToggle, onToggleSubtask, onEdit,
   </div></section>
 }
 
-function CalendarView({ tasks, studyReminders, month, setMonth, calendarView, setCalendarView, onAdd, onEdit, onOpenStudy }: {
-  tasks: Task[]
+function CalendarView({ studyReminders, month, setMonth, calendarView, setCalendarView, onAdd, onEdit }: {
   studyReminders: StudyReminder[]
   month: Date
   setMonth: (date: Date) => void
   calendarView: 'month' | 'week'
   setCalendarView: (view: 'month' | 'week') => void
   onAdd: (date: string) => void
-  onEdit: (task: Task) => void
-  onOpenStudy: () => void
+  onEdit: (reminder: StudyReminder) => void
 }) {
   const year = month.getFullYear()
   const monthIndex = month.getMonth()
+  const hourHeight = 56
   const firstDay = new Date(year, monthIndex, 1)
   const sundayOffset = firstDay.getDay()
   const daysInMonth = new Date(year, monthIndex + 1, 0).getDate()
@@ -1824,30 +1857,67 @@ function CalendarView({ tasks, studyReminders, month, setMonth, calendarView, se
     const day = index - sundayOffset + 1
     return day > 0 && day <= daysInMonth ? new Date(year, monthIndex, day) : null
   })
-  const itemsByDate = new Map<string, { key: string; title: string; completed: boolean; priority: Priority; task: Task; isSubtask: boolean; dueAt: string | null }[]>()
-  function addCalendarItem(date: string, item: { key: string; title: string; completed: boolean; priority: Priority; task: Task; isSubtask: boolean; dueAt: string | null }) {
-    const items = itemsByDate.get(date) ?? []
-    items.push(item)
-    itemsByDate.set(date, items)
-  }
-  tasks.forEach((task) => {
-    if (task.due_at) {
-      const key = localDateKey(new Date(task.due_at))
-      addCalendarItem(key, { key: task.id, title: task.title, completed: Boolean(task.completed_at), priority: task.priority, task, isSubtask: false, dueAt: task.due_at })
-    }
-    task.subtasks.forEach((subtask) => {
-      if (subtask.due_at) {
-        const key = localDateKey(new Date(subtask.due_at))
-        addCalendarItem(key, { key: subtask.id, title: subtask.title, completed: Boolean(subtask.completed_at), priority: task.priority, task, isSubtask: true, dueAt: subtask.due_at })
-      }
-    })
-  })
   const todayKey = localDateKey(new Date())
   const weekStart = new Date(year, monthIndex, month.getDate() - month.getDay())
   const weekDays = Array.from({ length: 7 }, (_, index) => {
     const date = new Date(weekStart)
     date.setDate(date.getDate() + index)
     return date
+  })
+  const calendarDates = Array.from(new Map(
+    [...cells.filter((date): date is Date => date !== null), ...weekDays]
+      .map((date) => [localDateKey(date), date]),
+  ).values())
+  const itemsByDate = new Map<string, { key: string; title: string; subject: string; completed: boolean; reminder: StudyReminder; dueAt: string; endAt: string }[]>()
+  function addCalendarItem(date: string, item: { key: string; title: string; subject: string; completed: boolean; reminder: StudyReminder; dueAt: string; endAt: string }) {
+    const items = itemsByDate.get(date) ?? []
+    items.push(item)
+    itemsByDate.set(date, items)
+  }
+  studyReminders.forEach((reminder) => {
+    if (reminder.schedule_type === 'weekly') {
+      calendarDates.forEach((date) => {
+        if (!reminder.days_of_week.includes(date.getDay())) return
+        const [hours = '18', minutes = '0'] = (reminder.remind_time ?? '18:00').split(':')
+        const startAt = new Date(date.getFullYear(), date.getMonth(), date.getDate(), Number(hours), Number(minutes))
+        let endAt = reminder.remind_end_time
+          ? (() => {
+              const [endHours = '18', endMinutes = '45'] = reminder.remind_end_time.split(':')
+              return new Date(date.getFullYear(), date.getMonth(), date.getDate(), Number(endHours), Number(endMinutes))
+            })()
+          : new Date(startAt.getTime() + 45 * 60_000)
+        if (endAt <= startAt && reminder.remind_end_time) endAt.setDate(endAt.getDate() + 1)
+        const key = localDateKey(date)
+        addCalendarItem(key, {
+          key: `${reminder.id}-${key}`,
+          title: reminder.topic || reminder.subject,
+          subject: reminder.subject,
+          completed: reminder.completed_on === key,
+          reminder,
+          dueAt: startAt.toISOString(),
+          endAt: endAt.toISOString(),
+        })
+      })
+    } else if (reminder.remind_at) {
+      const date = new Date(reminder.remind_at)
+      const key = localDateKey(date)
+      let endAt = reminder.remind_end_time
+        ? (() => {
+            const [endHours = '18', endMinutes = '45'] = reminder.remind_end_time.split(':')
+            return new Date(date.getFullYear(), date.getMonth(), date.getDate(), Number(endHours), Number(endMinutes))
+          })()
+        : new Date(date.getTime() + 45 * 60_000)
+      if (endAt <= date && reminder.remind_end_time) endAt.setDate(endAt.getDate() + 1)
+      addCalendarItem(key, {
+        key: reminder.id,
+        title: reminder.topic || reminder.subject,
+        subject: reminder.subject,
+        completed: reminder.completed_on === key,
+        reminder,
+        dueAt: reminder.remind_at,
+        endAt: endAt.toISOString(),
+      })
+    }
   })
   const weekEnd = weekDays[6]
   const weekTitle = weekStart.getMonth() === weekEnd.getMonth()
@@ -1863,86 +1933,79 @@ function CalendarView({ tasks, studyReminders, month, setMonth, calendarView, se
     : new Date(year, monthIndex + 1, 1))
   const weekAgenda = weekDays.map((date) => {
     const key = localDateKey(date)
-    const dayItems = [
-      ...(itemsByDate.get(key) ?? []).map((item) => ({
-        ...item,
-        description: item.isSubtask ? item.task.title : item.task.category,
-        isStudy: false,
-      })),
-      ...studyReminders.flatMap((reminder) => {
-        const dateMatches = reminder.schedule_type === 'weekly'
-          ? reminder.days_of_week.includes(date.getDay())
-          : Boolean(reminder.remind_at && localDateKey(new Date(reminder.remind_at)) === key)
-        if (!dateMatches) return []
-        const dueAt = reminder.schedule_type === 'weekly'
-          ? (() => {
-              const [hours = '18', minutes = '0'] = (reminder.remind_time ?? '18:00').split(':')
-              return new Date(date.getFullYear(), date.getMonth(), date.getDate(), Number(hours), Number(minutes)).toISOString()
-            })()
-          : reminder.remind_at
-        return [{
-          key: `study-${reminder.id}-${key}`,
-          title: reminder.topic || reminder.subject,
-          description: `${reminder.subject} · ${reminder.schedule_type === 'spaced' ? 'Spaced review' : 'Study session'}`,
-          completed: false,
-          priority: 'low' as Priority,
-          dueAt,
-          isSubtask: false,
-          task: null,
-          isStudy: true,
-        }]
-      }),
-    ].sort((a, b) => {
-      if (!a.dueAt || !b.dueAt) return a.dueAt ? 1 : b.dueAt ? -1 : a.title.localeCompare(b.title)
-      return new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime()
-    })
+    const dayItems = [...(itemsByDate.get(key) ?? [])].map((item) => ({
+      ...item,
+      description: `${item.subject} · ${item.reminder.schedule_type === 'spaced' ? 'Spaced review' : 'Study reminder'}`,
+      isStudy: true,
+      duration: (new Date(item.endAt).getTime() - new Date(item.dueAt).getTime()) / 60_000,
+    })).sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime())
     const lanes: number[] = []
-    const timedItems = dayItems.filter((item) => item.dueAt && !(new Date(item.dueAt).getHours() === 0 && new Date(item.dueAt).getMinutes() === 0))
+    const timedItems = dayItems
       .map((item) => {
         const dateTime = new Date(item.dueAt!)
         const start = dateTime.getHours() * 60 + dateTime.getMinutes()
         const availableLane = lanes.findIndex((laneEnd) => laneEnd <= start)
         const lane = availableLane < 0 ? lanes.length : availableLane
-        lanes[lane] = start + 45
+        lanes[lane] = start + item.duration
         return { ...item, start, lane }
       })
     const laneCount = Math.max(1, lanes.length)
+    const timedStart = timedItems.length ? Math.min(...timedItems.map((item) => item.start)) : 5 * 60
+    const timedEnd = timedItems.length ? Math.max(...timedItems.map((item) => item.start + item.duration)) : 23 * 60
     return {
       date,
       key,
       items: dayItems,
-      allDayItems: dayItems.filter((item) => !item.dueAt || (new Date(item.dueAt).getHours() === 0 && new Date(item.dueAt).getMinutes() === 0)),
       timedItems: timedItems.map((item) => ({ ...item, laneCount })),
+      timedStart,
+      timedEnd,
     }
   })
+  const scheduleStart = Math.min(5 * 60, ...weekAgenda.filter((day) => day.timedItems.length).map((day) => Math.floor(day.timedStart / 60) * 60))
+  const scheduleEnd = Math.max(23 * 60, ...weekAgenda.filter((day) => day.timedItems.length).map((day) => Math.ceil(day.timedEnd / 60) * 60))
+  const scheduleHours = (scheduleEnd - scheduleStart) / 60
+  const newReminderDate = new Date()
+  newReminderDate.setMinutes(Math.ceil(newReminderDate.getMinutes() / 15) * 15, 0, 0)
+  if (newReminderDate.getTime() <= Date.now()) newReminderDate.setMinutes(newReminderDate.getMinutes() + 15)
+  const newReminderDateTime = `${localDateKey(newReminderDate)}T${String(newReminderDate.getHours()).padStart(2, '0')}:${String(newReminderDate.getMinutes()).padStart(2, '0')}`
 
   return <section className="calendar-card">
-    <div className="calendar-heading"><div><h2>{title}</h2><p>{calendarView === 'week' ? 'Your week, one task at a time.' : 'Your time, at a glance.'}</p></div><div className="calendar-heading-actions"><div className="calendar-period-switch" role="group" aria-label="Calendar period"><button className={calendarView === 'week' ? 'selected' : ''} onClick={() => setCalendarView('week')} aria-pressed={calendarView === 'week'}>Week</button><button className={calendarView === 'month' ? 'selected' : ''} onClick={() => setCalendarView('month')} aria-pressed={calendarView === 'month'}>Month</button></div><div className="calendar-controls"><button className="icon-button" aria-label={`Previous ${calendarView}`} onClick={previousPeriod}><ArrowLeft size={17} /></button><button className="today-button" onClick={() => setMonth(new Date())}>Today</button><button className="icon-button" aria-label={`Next ${calendarView}`} onClick={nextPeriod}><ArrowRight size={17} /></button></div></div></div>
-    {calendarView === 'week' ? <div className="week-calendar-scroll"><div className="week-calendar">
+    <div className="calendar-heading outlook-calendar-heading"><div><span className="calendar-caption">CALENDAR · STUDY REMINDERS</span><h2>{title}</h2><p>{calendarView === 'week' ? 'Your study reminders, organized by time.' : 'Study reminders this month.'}</p></div><div className="calendar-heading-actions"><button className="outlook-new-event" onClick={() => onAdd(newReminderDateTime)}><Plus size={15} /> New reminder</button><div className="calendar-controls"><button className="icon-button" aria-label={`Previous ${calendarView}`} onClick={previousPeriod}><ArrowLeft size={17} /></button><button className="today-button" onClick={() => setMonth(new Date())}>Today</button><button className="icon-button" aria-label={`Next ${calendarView}`} onClick={nextPeriod}><ArrowRight size={17} /></button></div><div className="calendar-period-switch" role="group" aria-label="Calendar period"><button className={calendarView === 'week' ? 'selected' : ''} onClick={() => setCalendarView('week')} aria-pressed={calendarView === 'week'}>Week</button><button className={calendarView === 'month' ? 'selected' : ''} onClick={() => setCalendarView('month')} aria-pressed={calendarView === 'month'}>Month</button></div></div></div>
+    {calendarView === 'week' ? <div className="week-calendar-scroll"><div className="week-calendar" style={{ '--hour-height': `${hourHeight}px`, '--schedule-hours': scheduleHours } as CSSProperties}>
       <div className="week-calendar-header">
         <div className="week-timezone">LOCAL TIME</div>
         {weekAgenda.map(({ date, key, items }) => <div className={`week-day-header ${key === todayKey ? 'today' : ''}`} key={key}>
           <span>{new Intl.DateTimeFormat('en', { weekday: 'short' }).format(date)}</span>
           <strong>{date.getDate()}</strong>
-          <small>{items.length} {items.length === 1 ? 'item' : 'items'}</small>
+          <small>{items.length} {items.length === 1 ? 'reminder' : 'reminders'}</small>
         </div>)}
       </div>
       <div className="week-all-day">
         <div className="week-all-day-label">all-day</div>
-        {weekAgenda.map(({ date, key, allDayItems }) => <div className={`week-all-day-cell ${key === todayKey ? 'today' : ''}`} key={key}>
-          {allDayItems.map((item) => <button key={item.key} className={`week-agenda-task ${item.isStudy ? 'study' : item.completed ? 'done' : item.priority}`} onClick={item.isStudy ? onOpenStudy : () => item.task && onEdit(item.task)} title={item.title}>{item.title}</button>)}
-          <button className="week-agenda-add" aria-label={`Add task on ${fullDate.format(date)}`} onClick={() => onAdd(`${key}T09:00`)}><Plus size={13} /></button>
+        {weekAgenda.map(({ date, key }) => <div className={`week-all-day-cell ${key === todayKey ? 'today' : ''}`} key={key}>
+          <button className="week-agenda-add" aria-label={`Add reminder on ${fullDate.format(date)}`} onClick={() => onAdd(`${key}T09:00`)}><Plus size={13} /></button>
         </div>)}
       </div>
       <div className="week-time-grid">
-        <div className="week-time-labels">{Array.from({ length: 24 }, (_, hour) => <span key={hour}>{hour === 0 ? '' : new Intl.DateTimeFormat('en', { hour: 'numeric' }).format(new Date(2000, 0, 1, hour))}</span>)}</div>
-        {weekAgenda.map(({ key, timedItems }) => <div className={`week-time-day ${key === todayKey ? 'today' : ''}`} key={key}>
+        <div className="week-time-labels">{Array.from({ length: scheduleHours }, (_, index) => <span key={index}>{new Intl.DateTimeFormat('en', { hour: 'numeric' }).format(new Date(2000, 0, 1, scheduleStart / 60 + index))}</span>)}</div>
+        {weekAgenda.map(({ key, timedItems }) => <div className={`week-time-day ${key === todayKey ? 'today' : ''}`} key={key} onClick={(event) => {
+          if (event.target !== event.currentTarget) return
+          const bounds = event.currentTarget.getBoundingClientRect()
+          const clickedMinutes = scheduleStart + ((event.clientY - bounds.top) / bounds.height) * scheduleHours * 60
+          const roundedMinutes = Math.round(clickedMinutes / 15) * 15
+          const hours = Math.floor(roundedMinutes / 60) % 24
+          const minutes = roundedMinutes % 60
+          onAdd(`${key}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`)
+        }}>
           {timedItems.map((item) => {
             const time = new Date(item.dueAt!)
-            return <button key={item.key} className={`week-agenda-task ${item.isStudy ? 'study' : item.completed ? 'done' : item.priority} ${item.isSubtask ? 'calendar-subtask' : ''}`} style={{ top: `${item.start / 60 * 56}px`, left: `calc(${item.lane * 100 / item.laneCount}% + 2px)`, width: `calc(${100 / item.laneCount}% - 4px)` }} onClick={item.isStudy ? onOpenStudy : () => item.task && onEdit(item.task)} title={item.description ? `${item.description} · ${item.title}` : item.title}>
-              <span className="week-agenda-time">{new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(time)}</span>
-              <span className="week-agenda-task-title">{item.isSubtask && <span aria-hidden="true">↳ </span>}{item.title}</span>
+            const end = new Date(item.endAt)
+            const top = ((item.start - scheduleStart) / 60) * hourHeight
+            const height = Math.max(25, (item.duration / 60) * hourHeight)
+            return <button key={item.key} className={`week-agenda-task ${item.completed ? 'done' : 'study'}`} style={{ top: `${top}px`, height: `${height}px`, left: `calc(${item.lane * 100 / item.laneCount}% + 2px)`, width: `calc(${100 / item.laneCount}% - 4px)` }} onClick={(event) => { event.stopPropagation(); onEdit(item.reminder) }} title={item.description ? `${item.description} · ${item.title}` : item.title}>
+              <span className="week-agenda-task-title">{item.title}</span>
               {item.description && <span className="week-agenda-task-description">{item.description}</span>}
+              <span className="week-agenda-time"><Clock3 size={10} />{new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(time)} – {new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(end)}{end.getDate() !== time.getDate() ? ' · +1 day' : ''}</span>
               {item.completed && <Check size={12} />}
             </button>
           })}
@@ -1955,8 +2018,8 @@ function CalendarView({ tasks, studyReminders, month, setMonth, calendarView, se
       const key = localDateKey(date)
       const dayItems = itemsByDate.get(key) ?? []
       return <div className={`calendar-cell ${key === todayKey ? 'today-cell' : ''}`} key={key}>
-        <div className="calendar-day-heading"><span className="calendar-day-number">{date.getDate()}</span><button aria-label={`Add task on ${fullDate.format(date)}`} onClick={() => onAdd(`${key}T09:00`)}><Plus size={14} /></button></div>
-        <div className="calendar-day-tasks">{dayItems.slice(0, 3).map((item) => <button key={item.key} className={`calendar-task ${item.completed ? 'done' : item.priority} ${item.isSubtask ? 'calendar-subtask' : ''}`} title={item.isSubtask ? `${item.task.title} › ${item.title}` : item.title} onClick={() => onEdit(item.task)}>{item.completed && <Check size={11} />}{item.isSubtask && <span className="calendar-subtask-marker" aria-hidden="true">↳</span>}{item.title}</button>)}{dayItems.length > 3 && <span className="more-tasks">+{dayItems.length - 3} more</span>}</div>
+        <div className="calendar-day-heading"><span className="calendar-day-number">{date.getDate()}</span><button aria-label={`Add reminder on ${fullDate.format(date)}`} onClick={() => onAdd(`${key}T09:00`)}><Plus size={14} /></button></div>
+        <div className="calendar-day-tasks">{dayItems.slice(0, 3).map((item) => <button key={item.key} className={`calendar-task ${item.completed ? 'done' : 'study-event'}`} title={`${item.subject} · ${item.title}`} onClick={() => onEdit(item.reminder)}>{item.completed && <Check size={11} />}{item.title}</button>)}{dayItems.length > 3 && <span className="more-tasks">+{dayItems.length - 3} more</span>}</div>
       </div>
     })}</div>
     </>}

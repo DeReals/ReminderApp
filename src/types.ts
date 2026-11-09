@@ -47,6 +47,7 @@ export type StudyReminder = {
   schedule_type: 'once' | 'weekly' | 'spaced'
   remind_at: string | null
   remind_time: string | null
+  remind_end_time: string | null
   days_of_week: number[]
   completed_on: string | null
   review_count: number
@@ -60,6 +61,7 @@ export type StudyReminderDraft = {
   schedule_type: 'once' | 'weekly' | 'spaced'
   date: string
   time: string
+  end_time: string
   days_of_week: number[]
 }
 
