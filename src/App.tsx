@@ -10,6 +10,7 @@ import {
   Check,
   CheckCheck,
   ChevronDown,
+  ChevronUp,
   Clock3,
   Flame,
   LayoutList,
@@ -27,6 +28,7 @@ import {
 } from 'lucide-react'
 import { supabase } from './lib/supabase'
 import type { DisciplineHabit, DisciplineHabitDraft, DisciplineLog, Priority, StudyReminder, StudyReminderDraft, Task, TaskDraft, TaskSubtask, TaskSubtaskDraft } from './types'
+import { MyDayStudyQueue, StudyPlanner } from './study/StudyPlanner'
 
 const emptyDraft: TaskDraft = {
   title: '',
@@ -147,36 +149,28 @@ type DayTaskItem = { task: Task; subtask: TaskSubtask | null }
 
 function Dashboard({ client, session }: { client: SupabaseClient; session: Session }) {
   const [tasks, setTasks] = useState<Task[]>([])
-  const [studyReminders, setStudyReminders] = useState<StudyReminder[]>([])
   const [disciplineHabits, setDisciplineHabits] = useState<DisciplineHabit[]>([])
   const [disciplineLogs, setDisciplineLogs] = useState<DisciplineLog[]>([])
   const [loading, setLoading] = useState(true)
-  const [studyLoading, setStudyLoading] = useState(true)
   const [disciplineLoading, setDisciplineLoading] = useState(true)
   const [error, setError] = useState('')
   const [mode, setMode] = useState<DashboardMode>('today')
   const [filter, setFilter] = useState<Filter>('all')
   const [priorityFilter, setPriorityFilter] = useState<'all' | Priority>('all')
   const [view, setView] = useState<View>('list')
-  const [calendarView, setCalendarView] = useState<'month' | 'week'>('week')
   const [query, setQuery] = useState('')
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<Task | null>(null)
   const [initialDate, setInitialDate] = useState('')
-  const [calendarMonth, setCalendarMonth] = useState(() => new Date())
   const [busyId, setBusyId] = useState('')
-  const [reviewingId, setReviewingId] = useState('')
+  const [taskOrderBusy, setTaskOrderBusy] = useState(false)
   const [completionMessage, setCompletionMessage] = useState('')
   const [focusTaskId, setFocusTaskId] = useState<string | null>(null)
-  const [focusStudyReminderId, setFocusStudyReminderId] = useState<string | null>(null)
   const [focusDuration, setFocusDuration] = useState(25 * 60)
   const [focusRemaining, setFocusRemaining] = useState(25 * 60)
   const [focusEndsAt, setFocusEndsAt] = useState<number | null>(null)
   const [focusPhase, setFocusPhase] = useState<'focus' | 'break'>('focus')
   const [breakAvailable, setBreakAvailable] = useState(false)
-  const [studyDialogOpen, setStudyDialogOpen] = useState(false)
-  const [editingStudyReminder, setEditingStudyReminder] = useState<StudyReminder | null>(null)
-  const [initialReminderDateTime, setInitialReminderDateTime] = useState('')
   const [disciplineDialogOpen, setDisciplineDialogOpen] = useState(false)
   const [disciplineBusyId, setDisciplineBusyId] = useState('')
   const [notificationsEnabled, setNotificationsEnabled] = useState(() => typeof Notification !== 'undefined' && Notification.permission === 'granted')
@@ -193,8 +187,8 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
   async function loadTasks() {
     setLoading(true)
     const [tasksResult, subtasksResult] = await Promise.all([
-      client.from('tasks').select('id,user_id,title,description,due_at,priority,category,completed_at,created_at').order('due_at', { ascending: true, nullsFirst: false }),
-      client.from('task_subtasks').select('id,user_id,task_id,title,due_at,completed_at,created_at').order('created_at', { ascending: true }),
+      client.from('tasks').select('id,user_id,title,description,due_at,day_order,priority,category,completed_at,created_at').order('due_at', { ascending: true, nullsFirst: false }),
+      client.from('task_subtasks').select('id,user_id,task_id,title,day_order,due_at,completed_at,created_at').order('created_at', { ascending: true }),
     ])
     if (tasksResult.error) setError(`Could not load tasks: ${tasksResult.error.message}`)
     else if (subtasksResult.error) setError(`Could not load subtasks: ${subtasksResult.error.message}`)
@@ -212,31 +206,6 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
       setError('')
     }
     setLoading(false)
-  }
-
-  async function loadStudyReminders() {
-    setStudyLoading(true)
-    const fetchReminders = () => client.from('study_reminders')
-      .select('id,user_id,subject,topic,schedule_type,remind_at,remind_time,remind_end_time,days_of_week,completed_on,review_count,enabled,created_at')
-      .order('created_at', { ascending: false })
-    let result = await fetchReminders()
-    if (result.error && (result.error.code === 'PGRST301' || result.error.message.toLowerCase().includes('jwt expired'))) {
-      const { data: refreshData, error: refreshError } = await client.auth.refreshSession()
-      if (refreshError || !refreshData.session) {
-        setError(refreshError
-          ? `Your session expired and could not be refreshed: ${refreshError.message}. Please sign out and sign in again.`
-          : 'Your session expired. Please sign out and sign in again.')
-        setStudyLoading(false)
-        return
-      }
-      result = await fetchReminders()
-    }
-    if (result.error) setError(`Could not load study reminders: ${result.error.message}`)
-    else {
-      setStudyReminders(result.data as StudyReminder[])
-      setError('')
-    }
-    setStudyLoading(false)
   }
 
   async function loadDisciplineData() {
@@ -260,12 +229,8 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
 
   useEffect(() => {
     void loadTasks()
-    void loadStudyReminders()
     void loadDisciplineData()
   }, [client])
-
-  const activeStudyReminders = studyReminders.filter((reminder) => reminder.enabled)
-  const subjects = [...new Set(studyReminders.map((reminder) => reminder.subject))].sort((a, b) => a.localeCompare(b))
 
   async function enableStudyNotifications() {
     if (!('Notification' in window)) {
@@ -284,8 +249,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
   }
 
   useEffect(() => {
-    const hasScheduledNudges = studyReminders.some((reminder) => reminder.enabled)
-      || disciplineHabits.some((habit) => habit.active && habit.cue_time)
+    const hasScheduledNudges = disciplineHabits.some((habit) => habit.active && habit.cue_time)
     if (!notificationsEnabled || !hasScheduledNudges || !('Notification' in window)) return
 
     const checkReminder = () => {
@@ -296,50 +260,6 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
       const now = new Date()
       const today = localDateKey(now)
       const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-
-      for (const reminder of studyReminders.filter((item) => item.enabled)) {
-        const isOneTime = reminder.schedule_type === 'once'
-        const isSpaced = reminder.schedule_type === 'spaced'
-        const scheduledDate = reminder.remind_at ? new Date(reminder.remind_at) : null
-        const scheduledTime = reminder.remind_time?.slice(0, 5) ?? '23:59'
-        const isDue = isSpaced
-          ? Boolean(scheduledDate && scheduledDate.getTime() <= now.getTime())
-          : isOneTime
-            ? Boolean(scheduledDate && scheduledDate.getTime() <= now.getTime())
-            : reminder.days_of_week.includes(now.getDay()) && scheduledTime <= currentTime
-        const notificationKey = `${reminder.id}:${isSpaced ? reminder.remind_at : today}`
-        if (!isDue || notifiedReminderKeys.current.has(notificationKey)) continue
-        const storageKey = `daymark-study-reminder:${session.user.id}:${notificationKey}`
-        try {
-          if (window.localStorage.getItem(storageKey)) {
-            notifiedReminderKeys.current.add(notificationKey)
-            continue
-          }
-        } catch (storageError) {
-          console.error('Could not read study reminder notification state:', storageError)
-        }
-        notifiedReminderKeys.current.add(notificationKey)
-        try {
-          window.localStorage.setItem(storageKey, 'true')
-        } catch (storageError) {
-          console.error('Could not save study reminder notification state:', storageError)
-        }
-        const notification = new Notification(`Time to study${reminder.subject ? ` ${reminder.subject}` : ''}`, {
-          body: reminder.topic || 'A little review today can help your learning stick.',
-          tag: `daymark-study-${notificationKey}`,
-        })
-        notification.onclick = () => {
-          window.focus()
-          setMode('study')
-          notification.close()
-        }
-        if (isOneTime) {
-          void client.from('study_reminders').update({ enabled: false }).eq('id', reminder.id).then(({ error: updateError }) => {
-            if (updateError) setError(`Reminder sent, but could not update its status: ${updateError.message}`)
-            else setStudyReminders((current) => current.map((item) => item.id === reminder.id ? { ...item, enabled: false } : item))
-          })
-        }
-      }
 
       for (const habit of disciplineHabits.filter((item) => item.active && item.cue_time && item.days_of_week.includes(now.getDay()))) {
         const cueTime = habit.cue_time?.slice(0, 5) ?? '23:59'
@@ -375,100 +295,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
     checkReminder()
     const intervalId = window.setInterval(checkReminder, 15_000)
     return () => window.clearInterval(intervalId)
-  }, [notificationsEnabled, studyReminders, disciplineHabits, disciplineLogs, session.user.id, client])
-
-  async function saveStudyReminder(draft: StudyReminderDraft) {
-    const schedule = draft.schedule_type !== 'weekly'
-      ? {
-          remind_at: new Date(`${draft.date}T${draft.time}`).toISOString(),
-          remind_time: null,
-          remind_end_time: draft.end_time,
-          days_of_week: [],
-        }
-      : {
-          remind_at: null,
-          remind_time: draft.time,
-          remind_end_time: draft.end_time,
-          days_of_week: draft.days_of_week,
-        }
-
-    if (editingStudyReminder) {
-      const updates = {
-        subject: draft.subject.trim(),
-        topic: draft.topic.trim(),
-        schedule_type: draft.schedule_type,
-        ...schedule,
-      }
-      const { error: updateError } = await client.from('study_reminders').update(updates).eq('id', editingStudyReminder.id)
-      if (updateError) {
-        setError(`Could not update study reminder: ${updateError.message}`)
-        return false
-      }
-      setError('')
-      setStudyReminders((current) => current.map((item) => item.id === editingStudyReminder.id ? { ...item, ...updates } : item))
-      setEditingStudyReminder(null)
-      setStudyDialogOpen(false)
-      return true
-    }
-
-    const { data: savedReminder, error: saveError } = await client.from('study_reminders').insert({
-      user_id: session.user.id,
-      subject: draft.subject.trim(),
-      topic: draft.topic.trim(),
-      schedule_type: draft.schedule_type,
-      ...schedule,
-    }).select('id,user_id,subject,topic,schedule_type,remind_at,remind_time,remind_end_time,days_of_week,completed_on,review_count,enabled,created_at').single()
-    if (saveError) {
-      setError(`Could not save study reminder: ${saveError.message}`)
-      return false
-    }
-    setError('')
-    setStudyReminders((current) => [savedReminder as StudyReminder, ...current])
-    setStudyDialogOpen(false)
-    return true
-  }
-
-  async function toggleStudyReminder(reminder: StudyReminder) {
-    const { error: updateError } = await client.from('study_reminders').update({ enabled: !reminder.enabled }).eq('id', reminder.id)
-    if (updateError) setError(`Could not update study reminder: ${updateError.message}`)
-    else {
-      setError('')
-      setStudyReminders((current) => current.map((item) => item.id === reminder.id ? { ...item, enabled: !reminder.enabled } : item))
-    }
-  }
-
-  async function toggleStudyReminderCompletion(reminder: StudyReminder) {
-    const occurrenceDate = getStudyOccurrenceDate(reminder, new Date())
-    const isComplete = reminder.completed_on === occurrenceDate
-    const updates: Partial<StudyReminder> = { completed_on: isComplete ? null : occurrenceDate }
-    if (!isComplete && reminder.schedule_type === 'spaced') {
-      const nextReviewDate = new Date()
-      nextReviewDate.setDate(nextReviewDate.getDate() + getNextSpacedIntervalDays(reminder.review_count))
-      updates.remind_at = nextReviewDate.toISOString()
-      updates.review_count = reminder.review_count + 1
-    }
-    setReviewingId(reminder.id)
-    const { error: updateError } = await client.from('study_reminders').update(updates).eq('id', reminder.id)
-    setReviewingId('')
-    if (updateError) setError(`Could not update study completion: ${updateError.message}`)
-    else {
-      setError('')
-      setStudyReminders((current) => current.map((item) => item.id === reminder.id
-        ? { ...item, ...updates }
-        : item))
-      setCompletionMessage(isComplete ? 'Study session back on your list.' : 'Study session complete. Nice work!')
-    }
-  }
-
-  async function deleteStudyReminder(reminder: StudyReminder) {
-    if (!window.confirm(`Delete your ${reminder.subject} study reminder? This can't be undone.`)) return
-    const { error: deleteError } = await client.from('study_reminders').delete().eq('id', reminder.id)
-    if (deleteError) setError(`Could not delete study reminder: ${deleteError.message}`)
-    else {
-      setError('')
-      setStudyReminders((current) => current.filter((item) => item.id !== reminder.id))
-    }
-  }
+  }, [notificationsEnabled, disciplineHabits, disciplineLogs, session.user.id])
 
   async function saveDisciplineHabit(draft: DisciplineHabitDraft) {
     const { data: savedHabit, error: saveError } = await client.from('discipline_habits').insert({
@@ -575,8 +402,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
       const priorityRank: Record<Priority, number> = { high: 0, medium: 1, low: 2 }
       return priorityRank[a.priority] - priorityRank[b.priority]
     })[0]
-  const selectedFocusTask = focusStudyReminderId ? undefined : tasks.find((task) => task.id === focusTaskId) ?? focusTask
-  const selectedFocusStudyReminder = studyReminders.find((reminder) => reminder.id === focusStudyReminderId)
+  const selectedFocusTask = tasks.find((task) => task.id === focusTaskId) ?? focusTask
 
   useEffect(() => {
     if (!focusEndsAt) return
@@ -634,6 +460,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
       task_id: savedTask.id,
       user_id: session.user.id,
       title: subtask.title.trim(),
+      day_order: editing?.subtasks.find((existing) => existing.id === subtask.id)?.day_order ?? null,
       due_at: subtask.due_at ? new Date(subtask.due_at).toISOString() : null,
       completed_at: subtask.completed_at,
     }))
@@ -668,6 +495,48 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
     setEditing(null)
     setInitialDate('')
     return true
+  }
+
+  async function reorderDayTasks(orderedItems: DayTaskItem[]) {
+    if (taskOrderBusy) return
+    setError('')
+    const taskOrders = new Map<string, number>()
+    const subtaskOrders = new Map<string, number>()
+    const changes = orderedItems.flatMap((item, index) => {
+      const dayOrder = index + 1
+      if (item.subtask) {
+        subtaskOrders.set(item.subtask.id, dayOrder)
+        return item.subtask.day_order === dayOrder ? [] : [{ ...item, dayOrder }]
+      }
+      taskOrders.set(item.task.id, dayOrder)
+      return item.task.day_order === dayOrder ? [] : [{ ...item, dayOrder }]
+    })
+    if (!changes.length) return
+
+    setTaskOrderBusy(true)
+    setTasks((current) => current.map((task) => ({
+      ...task,
+      day_order: taskOrders.get(task.id) ?? task.day_order,
+      subtasks: task.subtasks.map((subtask) => ({
+        ...subtask,
+        day_order: subtaskOrders.get(subtask.id) ?? subtask.day_order,
+      })),
+    })))
+    try {
+      const results = await Promise.all(changes.map(({ task, subtask, dayOrder }) => subtask
+        ? client.from('task_subtasks').update({ day_order: dayOrder }).eq('id', subtask.id).eq('task_id', task.id)
+        : client.from('tasks').update({ day_order: dayOrder }).eq('id', task.id)))
+      const failedResult = results.find((result) => result.error)
+      if (failedResult?.error) {
+        await loadTasks()
+        setError(`Could not save your task order: ${failedResult.error.message}`)
+      }
+    } catch (reorderError) {
+      await loadTasks()
+      setError(`Could not save your task order: ${reorderError instanceof Error ? reorderError.message : String(reorderError)}`)
+    } finally {
+      setTaskOrderBusy(false)
+    }
   }
 
   async function toggleTask(task: Task) {
@@ -725,30 +594,12 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
     setDialogOpen(true)
   }
 
-  function openNewStudyReminder(dateTime = '') {
-    setEditingStudyReminder(null)
-    setInitialReminderDateTime(dateTime)
-    setStudyDialogOpen(true)
-  }
-
   function selectFocusTask(task: Task) {
-    setFocusStudyReminderId(null)
     setFocusTaskId(task.id)
     setFocusPhase('focus')
     setBreakAvailable(false)
     setFocusEndsAt(null)
     setFocusRemaining(focusDuration)
-  }
-
-  function selectFocusStudyReminder(reminder: StudyReminder) {
-    setFocusTaskId(null)
-    setFocusStudyReminderId(reminder.id)
-    setFocusPhase('focus')
-    setBreakAvailable(false)
-    setFocusEndsAt(null)
-    setFocusRemaining(focusDuration)
-    setMode('tasks')
-    setFilter('all')
   }
 
   function setFocusMinutes(minutes: number) {
@@ -812,18 +663,18 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
     const completedA = a.subtask ? a.subtask.completed_at : a.task.completed_at
     const completedB = b.subtask ? b.subtask.completed_at : b.task.completed_at
     if (Boolean(completedA) !== Boolean(completedB)) return completedA ? 1 : -1
+    const orderA = a.subtask ? a.subtask.day_order : a.task.day_order
+    const orderB = b.subtask ? b.subtask.day_order : b.task.day_order
+    if (orderA !== orderB) {
+      if (orderA === null) return 1
+      if (orderB === null) return -1
+      return orderA - orderB
+    }
     const dueA = a.subtask?.due_at ?? a.task.due_at
     const dueB = b.subtask?.due_at ?? b.task.due_at
     return compareDueAt(dueA, dueB)
   })
   const todayWeekday = today.getDay()
-  const dayStudyReminders = studyReminders.filter((reminder) =>
-    (reminder.schedule_type === 'weekly' && reminder.enabled && reminder.days_of_week.includes(todayWeekday))
-    || (reminder.completed_on === todayKey)
-    || (reminder.schedule_type !== 'weekly'
-      && (reminder.enabled || reminder.schedule_type === 'once')
-      && Boolean(reminder.remind_at && localDateKey(new Date(reminder.remind_at)) <= todayKey)),
-  ).sort((a, b) => getReminderDateForDay(a, today) - getReminderDateForDay(b, today))
   const dayDisciplineHabits = disciplineHabits.filter((habit) => habit.active && habit.days_of_week.includes(todayWeekday))
   const dayDisciplineLogs = disciplineLogs.filter((log) => log.completed_on === todayKey)
 
@@ -839,7 +690,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
           <button className={mode === 'tasks' && filter === 'week' ? 'nav-item active' : 'nav-item'} onClick={() => { setMode('tasks'); setFilter('week') }}><CalendarDays size={18} /><span>This week</span><span className="nav-count">{weekTasks.length}</span></button>
           <button className={mode === 'tasks' && filter === 'month' ? 'nav-item active' : 'nav-item'} onClick={() => { setMode('tasks'); setFilter('month') }}><CalendarDays size={18} /><span>This month</span><span className="nav-count">{monthTasks.length}</span></button>
           <button className={mode === 'tasks' && filter === 'completed' ? 'nav-item active' : 'nav-item'} onClick={() => { setMode('tasks'); setFilter('completed') }}><CheckCheck size={18} /><span>Completed</span>{completedCount > 0 && <span className="nav-count">{completedCount}</span>}</button>
-          <button className={mode === 'study' ? 'nav-item active' : 'nav-item'} onClick={() => setMode('study')}><BookOpen size={18} /><span>Study reminders</span>{activeStudyReminders.length > 0 && <span className="nav-count">{activeStudyReminders.length}</span>}</button>
+          <button className={mode === 'study' ? 'nav-item active' : 'nav-item'} onClick={() => setMode('study')}><BookOpen size={18} /><span>Study planner</span></button>
           <button className={mode === 'discipline' ? 'nav-item active' : 'nav-item'} onClick={() => setMode('discipline')}><ShieldCheck size={18} /><span>Discipline coach</span></button>
         </nav>
         <div className="sidebar-bottom">
@@ -851,52 +702,36 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
       <main className="main-content">
         <header className="topbar">
           <div className="mobile-brand"><a className="brand" href="#"><span className="brand-mark"><Check size={18} /></span> daymark</a><div className="mobile-actions"><button aria-label="My day" className={`icon-button ${mode === 'today' ? 'selected' : ''}`} onClick={() => setMode('today')}><CalendarDays size={17} /></button><button aria-label="Study reminders" className={`icon-button ${mode === 'study' ? 'selected' : ''}`} onClick={() => setMode(mode === 'study' ? 'today' : 'study')}><BookOpen size={17} /></button><button aria-label="Discipline coach" className={`icon-button ${mode === 'discipline' ? 'selected' : ''}`} onClick={() => setMode(mode === 'discipline' ? 'today' : 'discipline')}><ShieldCheck size={17} /></button><button aria-label="Sign out" className="icon-button" onClick={() => void client.auth.signOut()}><LogOut size={17} /></button></div></div>
-          <div className="breadcrumb"><span>My space</span><span className="breadcrumb-slash">/</span><strong>{mode === 'study' ? 'Study reminders' : mode === 'discipline' ? 'Discipline coach' : mode === 'today' ? 'My day' : view === 'calendar' ? 'Calendar' : filterTitle}</strong></div>
+          <div className="breadcrumb"><span>My space</span><span className="breadcrumb-slash">/</span><strong>{mode === 'study' ? 'Study planner' : mode === 'discipline' ? 'Discipline coach' : mode === 'today' ? 'My day' : view === 'calendar' ? 'Calendar' : filterTitle}</strong></div>
           <div className="topbar-date">{fullDate.format(today)}</div>
         </header>
 
         <section className="page-content">
           {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')} aria-label="Dismiss error"><X size={16} /></button></div>}
-          {mode === 'today' ? <MyDayDashboard
+          {mode === 'today' ?           <MyDayDashboard
+            client={client}
+            userId={session.user.id}
             date={today}
             todayKey={todayKey}
             taskItems={dayTaskItems}
-            studyReminders={dayStudyReminders}
             disciplineHabits={dayDisciplineHabits}
             disciplineLogs={dayDisciplineLogs}
-            loading={loading || studyLoading || disciplineLoading}
+            loading={loading || disciplineLoading}
             busyTaskId={busyId}
             busyDisciplineId={disciplineBusyId}
-            reviewingId={reviewingId}
+            taskOrderBusy={taskOrderBusy}
             onToggleTask={(task) => void toggleTask(task)}
             onToggleSubtask={(task, subtask) => void toggleSubtask(task, subtask)}
+            onReorderTasks={(orderedItems) => void reorderDayTasks(orderedItems)}
             onOpenTask={(task) => { setEditing(task); setDialogOpen(true) }}
             onFocusTask={(task) => { selectFocusTask(task); setMode('tasks'); setFilter('all') }}
             onAddTask={() => openNewTask()}
             onOpenTasks={() => { setMode('tasks'); setFilter('all') }}
-            onAddStudy={() => { setMode('study'); openNewStudyReminder() }}
             onOpenStudy={() => setMode('study')}
-            onFocusStudy={selectFocusStudyReminder}
-            onComplete={(reminder) => void toggleStudyReminderCompletion(reminder)}
             onToggleDiscipline={(habit) => void toggleDisciplineLog(habit)}
             onAddDiscipline={() => { setMode('discipline'); setDisciplineDialogOpen(true) }}
             onOpenDiscipline={() => setMode('discipline')}
-          /> : mode === 'study' ? <StudyDashboard
-            reminders={studyReminders}
-            subjects={subjects}
-            loading={studyLoading}
-            notificationsSupported={'Notification' in window}
-            notificationPermission={('Notification' in window) ? Notification.permission : 'unsupported'}
-            notificationsEnabled={notificationsEnabled}
-            onEnableNotifications={() => void enableStudyNotifications()}
-            onAdd={() => openNewStudyReminder()}
-            onEdit={(reminder) => { setEditingStudyReminder(reminder); setInitialReminderDateTime(''); setStudyDialogOpen(true) }}
-            onToggle={(reminder) => void toggleStudyReminder(reminder)}
-            onDelete={(reminder) => void deleteStudyReminder(reminder)}
-            onFocus={selectFocusStudyReminder}
-            onComplete={(reminder) => void toggleStudyReminderCompletion(reminder)}
-            reviewingId={reviewingId}
-          /> : mode === 'discipline' ? <DisciplineDashboard
+          /> : mode === 'study' ? <StudyPlanner client={client} userId={session.user.id} /> : mode === 'discipline' ? <DisciplineDashboard
             habits={disciplineHabits}
             logs={disciplineLogs}
             loading={disciplineLoading}
@@ -924,7 +759,6 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
 
           {filter !== 'completed' && <FocusTimerPanel
             task={selectedFocusTask}
-            studyReminder={selectedFocusStudyReminder}
             duration={focusDuration}
             remaining={focusRemaining}
             running={focusEndsAt !== null}
@@ -936,9 +770,6 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
             onStartBreak={startBreak}
             onOpenTask={selectedFocusTask ? () => { setEditing(selectedFocusTask); setDialogOpen(true) } : undefined}
             onCompleteTask={selectedFocusTask ? () => void toggleTask(selectedFocusTask) : undefined}
-            onOpenStudy={selectedFocusStudyReminder ? () => setMode('study') : undefined}
-            onCompleteStudy={selectedFocusStudyReminder ? () => void toggleStudyReminderCompletion(selectedFocusStudyReminder) : undefined}
-            studyBusy={selectedFocusStudyReminder ? reviewingId === selectedFocusStudyReminder.id : false}
             taskBusy={selectedFocusTask ? busyId === selectedFocusTask.id : false}
             onAddTask={() => openNewTask()}
             todayProgress={todayProgress}
@@ -958,9 +789,7 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
           {completionMessage && <div className="completion-toast" role="status"><span className="toast-check"><Check size={15} /></span>{completionMessage}<button onClick={() => setCompletionMessage('')} aria-label="Dismiss message"><X size={15} /></button></div>}
 
           {view === 'calendar'
-            ? studyLoading
-              ? <div className="loading-state"><span className="loader" /> Loading your reminders…</div>
-              : <CalendarView studyReminders={activeStudyReminders} month={calendarMonth} setMonth={setCalendarMonth} calendarView={calendarView} setCalendarView={setCalendarView} onAdd={openNewStudyReminder} onEdit={(reminder) => { setEditingStudyReminder(reminder); setInitialReminderDateTime(''); setStudyDialogOpen(true) }} />
+            ? <StudyPlanner key="calendar" client={client} userId={session.user.id} initialScreen="calendar" />
             : loading
               ? <div className="loading-state"><span className="loader" /> Gathering your tasks…</div>
               : <TaskList tasks={filteredTasks} filter={filter} onToggle={toggleTask} onToggleSubtask={toggleSubtask} onEdit={(task) => { setEditing(task); setDialogOpen(true) }} onDelete={deleteTask} onFocus={selectFocusTask} busyId={busyId} onAdd={() => openNewTask()} />}
@@ -968,45 +797,42 @@ function Dashboard({ client, session }: { client: SupabaseClient; session: Sessi
         </section>
       </main>
       {dialogOpen && <TaskDialog task={editing} initialDate={initialDate} onClose={() => { setDialogOpen(false); setEditing(null); setInitialDate('') }} onSave={saveTask} />}
-      {studyDialogOpen && <StudyReminderDialog reminder={editingStudyReminder} initialDateTime={initialReminderDateTime} onClose={() => { setStudyDialogOpen(false); setEditingStudyReminder(null); setInitialReminderDateTime('') }} onSave={saveStudyReminder} />}
       {disciplineDialogOpen && <DisciplineHabitDialog onClose={() => setDisciplineDialogOpen(false)} onSave={saveDisciplineHabit} />}
     </div>
   )
 }
 
-function MyDayDashboard({ date, todayKey, taskItems, studyReminders, disciplineHabits, disciplineLogs, loading, busyTaskId, busyDisciplineId, reviewingId, onToggleTask, onToggleSubtask, onOpenTask, onFocusTask, onAddTask, onOpenTasks, onAddStudy, onOpenStudy, onFocusStudy, onComplete, onToggleDiscipline, onAddDiscipline, onOpenDiscipline }: {
+function MyDayDashboard({ client, userId, date, todayKey, taskItems, disciplineHabits, disciplineLogs, loading, busyTaskId, busyDisciplineId, taskOrderBusy, onToggleTask, onToggleSubtask, onReorderTasks, onOpenTask, onFocusTask, onAddTask, onOpenTasks, onOpenStudy, onToggleDiscipline, onAddDiscipline, onOpenDiscipline }: {
+  client: SupabaseClient
+  userId: string
   date: Date
   todayKey: string
   taskItems: DayTaskItem[]
-  studyReminders: StudyReminder[]
   disciplineHabits: DisciplineHabit[]
   disciplineLogs: DisciplineLog[]
   loading: boolean
   busyTaskId: string
   busyDisciplineId: string
-  reviewingId: string
+  taskOrderBusy: boolean
   onToggleTask: (task: Task) => void
   onToggleSubtask: (task: Task, subtask: TaskSubtask) => void
+  onReorderTasks: (items: DayTaskItem[]) => void
   onOpenTask: (task: Task) => void
   onFocusTask: (task: Task) => void
   onAddTask: () => void
   onOpenTasks: () => void
-  onAddStudy: () => void
   onOpenStudy: () => void
-  onFocusStudy: (reminder: StudyReminder) => void
-  onComplete: (reminder: StudyReminder) => void
   onToggleDiscipline: (habit: DisciplineHabit) => void
   onAddDiscipline: () => void
   onOpenDiscipline: () => void
 }) {
+  const [studyQueueCount, setStudyQueueCount] = useState(0)
   const completedTasks = taskItems.filter(({ task, subtask }) => subtask ? subtask.completed_at : task.completed_at)
   const pendingTaskItems = taskItems.filter(({ task, subtask }) => !(subtask ? subtask.completed_at : task.completed_at))
   const openTaskCount = pendingTaskItems.length
   const completedHabits = disciplineHabits.filter((habit) => disciplineLogs.some((log) => log.habit_id === habit.id))
-  const totalActions = taskItems.length + disciplineHabits.length + studyReminders.length
-  const completedStudySessions = studyReminders.filter((reminder) => isStudyReminderComplete(reminder, date)).length
-  const pendingStudyReminders = studyReminders.filter((reminder) => !isStudyReminderComplete(reminder, date))
-  const completedActions = completedTasks.length + completedHabits.length + completedStudySessions
+  const totalActions = taskItems.length + disciplineHabits.length
+  const completedActions = completedTasks.length + completedHabits.length
   const progress = totalActions ? Math.round(completedActions / totalActions * 100) : 0
   const circumference = 2 * Math.PI * 39
   const offset = circumference * (1 - progress / 100)
@@ -1017,13 +843,6 @@ function MyDayDashboard({ date, todayKey, taskItems, studyReminders, disciplineH
   }).length
   const greeting = date.getHours() < 12 ? 'Good morning' : date.getHours() < 17 ? 'Good afternoon' : 'Good evening'
 
-  function reminderTime(reminder: StudyReminder) {
-    if (reminder.schedule_type === 'weekly') return formatTime(reminder.remind_time ?? '18:00')
-    return reminder.remind_at
-      ? new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(new Date(reminder.remind_at))
-      : 'Scheduled today'
-  }
-
   return <div className="my-day-page">
     <div className="welcome-row my-day-welcome">
       <div><span className="eyebrow"><Sparkles size={14} /> YOUR WHOLE DAY, IN ONE PLACE</span><h1>{greeting}. This is your day.</h1><p><span className="my-day-date-pill"><CalendarDays size={13} />{fullDate.format(date)}</span><span className="my-day-welcome-note">A clear view of what matters, with room to take it one step at a time.</span></p></div>
@@ -1031,7 +850,7 @@ function MyDayDashboard({ date, todayKey, taskItems, studyReminders, disciplineH
     </div>
     <section className="my-day-overview">
       <div className="my-day-progress-visual">
-        <svg viewBox="0 0 100 100" role="img" aria-label={`${progress}% of today's tasks, study sessions, and commitments complete`}>
+        <svg viewBox="0 0 100 100" role="img" aria-label={`${progress}% of today's tasks and commitments complete`}>
           <defs><linearGradient id="my-day-progress-gradient" x1="0" x2="1" y1="0" y2="1"><stop offset="0%" stopColor="#8fb493" /><stop offset="100%" stopColor="#477650" /></linearGradient></defs>
           <circle cx="50" cy="50" r="39" className="my-day-ring-track" />
           <circle cx="50" cy="50" r="39" className="my-day-ring-progress" strokeDasharray={circumference} strokeDashoffset={offset} />
@@ -1041,10 +860,10 @@ function MyDayDashboard({ date, todayKey, taskItems, studyReminders, disciplineH
       <div className="my-day-overview-copy">
         <span className="my-day-overview-eyebrow">{totalActions === 0 ? 'FRESH PAGE' : completedActions === totalActions ? 'YOU SHOWED UP' : `${totalActions - completedActions} SMALL ${totalActions - completedActions === 1 ? 'STEP' : 'STEPS'} LEFT`}</span>
         <h2>{totalActions === 0 ? 'A little room to choose what matters.' : completedActions === totalActions ? 'You kept your promises today.' : 'Progress, not pressure.'}</h2>
-        <p>{totalActions === 0 ? 'Your schedule is clear. Add a task or commitment when you’re ready.' : `${completedActions} of ${totalActions} tasks, study sessions, and discipline commitments complete.`}</p>
+        <p>{totalActions === 0 ? 'Your schedule is clear. Add a task or commitment when you’re ready.' : `${completedActions} of ${totalActions} tasks and discipline commitments complete.`}</p>
         <div className="my-day-category-stats">
           <div><span className="my-day-dot task-dot" /><strong>{openTaskCount}</strong><span>tasks left</span></div>
-          <div><span className="my-day-dot study-dot" /><strong>{completedStudySessions}/{studyReminders.length}</strong><span>study sessions done</span></div>
+          <div><span className="my-day-dot study-dot" /><strong>{studyQueueCount}</strong><span>{studyQueueCount === 1 ? 'study session' : 'study sessions'}</span></div>
           <div><span className="my-day-dot discipline-dot" /><strong>{disciplineHabits.length - completedHabits.length}</strong><span>commitments left</span></div>
           {overdueCount > 0 && <span className="my-day-overdue">{overdueCount} overdue</span>}
         </div>
@@ -1052,20 +871,33 @@ function MyDayDashboard({ date, todayKey, taskItems, studyReminders, disciplineH
       <div className="my-day-progress-bars" aria-label="Progress by area">
         <div><span><i className="task-dot" /> Tasks</span><strong>{completedTasks.length}/{taskItems.length}</strong><div><i style={{ width: `${taskItems.length ? completedTasks.length / taskItems.length * 100 : 0}%` }} /></div></div>
         <div><span><i className="discipline-dot" /> Discipline</span><strong>{completedHabits.length}/{disciplineHabits.length}</strong><div><i style={{ width: `${disciplineHabits.length ? completedHabits.length / disciplineHabits.length * 100 : 0}%` }} /></div></div>
-        <div><span><i className="study-dot" /> Study sessions</span><strong>{completedStudySessions}/{studyReminders.length} done</strong><button onClick={onOpenStudy}>View study schedule</button></div>
       </div>
     </section>
     {loading ? <div className="my-day-loading"><span className="loader" /> Gathering your day…</div> : <div className="my-day-grid">
       <section className="my-day-section my-day-tasks">
-        <div className="my-day-section-heading"><div><span className="my-day-section-icon task-icon"><CheckCheck size={16} /></span><div><h2>Tasks</h2><p>Due today and anything overdue</p></div><span className="my-day-section-count">{openTaskCount}</span></div><button onClick={onAddTask}><Plus size={15} /> Add</button></div>
-        {pendingTaskItems.length ? <div className="my-day-item-list">{pendingTaskItems.map(({ task, subtask }) => {
+        <div className="my-day-section-heading"><div><span className="my-day-section-icon task-icon"><CheckCheck size={16} /></span><div><h2>Tasks</h2><p>Move tasks up or down to set your order.</p></div><span className="my-day-section-count">{openTaskCount}</span></div><button onClick={onAddTask}><Plus size={15} /> Add</button></div>
+        {pendingTaskItems.length ? <div className="my-day-item-list">{pendingTaskItems.map(({ task, subtask }, index) => {
           const title = subtask?.title ?? task.title
           const completedAt = subtask ? subtask.completed_at : task.completed_at
           const dueAt = subtask?.due_at ?? task.due_at
           const overdue = Boolean(!completedAt && dueAt && localDateKey(new Date(dueAt)) < todayKey)
           const busyKey = subtask ? `subtask:${subtask.id}` : task.id
+          const moveTask = (direction: -1 | 1) => {
+            const targetIndex = index + direction
+            if (taskOrderBusy || targetIndex < 0 || targetIndex >= pendingTaskItems.length) return
+            const reordered = [...pendingTaskItems]
+            const movedItem = reordered[index]!
+            reordered[index] = reordered[targetIndex]!
+            reordered[targetIndex] = movedItem
+            onReorderTasks(reordered)
+          }
           return <article className={`my-day-item ${completedAt ? 'item-complete' : ''}`} key={subtask?.id ?? task.id}>
             <button className={`my-day-check ${completedAt ? 'checked' : ''}`} aria-label={completedAt ? `Undo ${title}` : `Complete ${title}`} disabled={busyTaskId === busyKey} onClick={() => subtask ? onToggleSubtask(task, subtask) : onToggleTask(task)}>{completedAt && <Check size={13} />}</button>
+            <div className="my-day-order-control" aria-label={`Order for ${title}`}>
+              <button aria-label={`Move ${title} earlier`} disabled={taskOrderBusy || index === 0} onClick={() => moveTask(-1)}><ChevronUp size={13} /></button>
+              <span>{index + 1}</span>
+              <button aria-label={`Move ${title} later`} disabled={taskOrderBusy || index === pendingTaskItems.length - 1} onClick={() => moveTask(1)}><ChevronDown size={13} /></button>
+            </div>
             <button className="my-day-item-copy" onClick={() => onOpenTask(task)}><strong>{title}</strong><span>{subtask ? `Subtask of ${task.title} · ` : ''}{overdue ? 'Overdue' : completedAt ? 'Done today' : dueAt ? new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(new Date(dueAt)) : 'Completed today'}</span></button>
             {!completedAt && <button className="my-day-focus my-day-task-focus" onClick={() => onFocusTask(task)} aria-label={`Focus on ${title}`}><Timer size={14} /><span>Focus</span></button>}
             {overdue && <span className="my-day-status overdue-status">Overdue</span>}
@@ -1075,22 +907,8 @@ function MyDayDashboard({ date, todayKey, taskItems, studyReminders, disciplineH
         <button className="my-day-view-all" onClick={onOpenTasks}>Open all tasks <ArrowRight size={13} /></button>
       </section>
       <section className="my-day-section my-day-study">
-        <div className="my-day-section-heading"><div><span className="my-day-section-icon study-icon"><BookOpen size={16} /></span><div><h2>Study reminders</h2><p>Sessions scheduled for today</p></div><span className="my-day-section-count study-count">{pendingStudyReminders.length}</span></div><button onClick={onAddStudy}><Plus size={15} /> Add</button></div>
-        {pendingStudyReminders.length ? <div className="my-day-item-list">{pendingStudyReminders.map((reminder) => {
-          const scheduleDate = reminder.remind_at ? localDateKey(new Date(reminder.remind_at)) : todayKey
-          const overdue = reminder.schedule_type !== 'weekly' && scheduleDate < todayKey
-          const scheduleLabel = reminder.schedule_type === 'spaced'
-            ? `Spaced review ${reminder.review_count + 1}`
-            : reminder.schedule_type === 'weekly' ? 'Weekly session' : 'One-time session'
-          return <article className="my-day-item" key={reminder.id}>
-            <span className="my-day-time">{reminderTime(reminder)}</span>
-            <button className="my-day-item-copy" onClick={onOpenStudy}><strong>{reminder.topic || reminder.subject}</strong><span>{reminder.subject} · {scheduleLabel}</span></button>
-            {overdue && <span className="my-day-status overdue-status">Overdue</span>}
-            <button className="my-day-focus" onClick={() => onFocusStudy(reminder)} aria-label={`Start a focus timer for ${reminder.topic || reminder.subject}`}><Timer size={14} /></button>
-            <button className="my-day-review" onClick={() => onComplete(reminder)} disabled={reviewingId === reminder.id}>{reviewingId === reminder.id ? 'Saving…' : 'Mark complete'}</button>
-          </article>
-        })}</div> : <div className="my-day-empty"><BookOpen size={17} /><span>{studyReminders.length ? 'All study sessions complete. Nice work.' : 'No study sessions scheduled today.'}</span></div>}
-        <button className="my-day-view-all" onClick={onOpenStudy}>Open study schedule <ArrowRight size={13} /></button>
+        <div className="my-day-section-heading"><div><span className="my-day-section-icon study-icon"><BookOpen size={16} /></span><div><h2>Study plan</h2><p>Overdue first, then due now and later today.</p></div><span className="my-day-section-count study-count">{studyQueueCount}</span></div></div>
+        <MyDayStudyQueue client={client} userId={userId} todayKey={todayKey} onCountChange={setStudyQueueCount} onOpenStudy={onOpenStudy} />
       </section>
       <section className="my-day-section my-day-discipline">
         <div className="my-day-section-heading"><div><span className="my-day-section-icon discipline-icon"><ShieldCheck size={16} /></span><div><h2>Discipline</h2><p>Small promises on your schedule</p></div><span className="my-day-section-count discipline-count">{disciplineHabits.filter((habit) => !disciplineLogs.some((log) => log.habit_id === habit.id)).length}</span></div><button onClick={onAddDiscipline}><Plus size={15} /> Add</button></div>
@@ -1108,7 +926,7 @@ function MyDayDashboard({ date, todayKey, taskItems, studyReminders, disciplineH
   </div>
 }
 
-function StudyDashboard({ reminders, subjects, loading, notificationsSupported, notificationPermission, notificationsEnabled, onEnableNotifications, onAdd, onEdit, onToggle, onDelete, onFocus, onComplete, reviewingId }: {
+export function StudyDashboard({ reminders, subjects, loading, notificationsSupported, notificationPermission, notificationsEnabled, onEnableNotifications, onAdd, onEdit, onToggle, onDelete, onFocus, onComplete, reviewingId }: {
   reminders: StudyReminder[]
   subjects: string[]
   loading: boolean
@@ -1214,8 +1032,8 @@ function StudyReminderRow({ reminder, onEdit, onToggle, onDelete, onFocus, onCom
   const endTime = reminder.remind_end_time?.slice(0, 5) ?? getDefaultStudyEndTime(startTime)
   const timeRange = `${formatTime(startTime)}–${formatTime(endTime)}${endTime <= startTime ? ' (+1 day)' : ''}`
   const schedule = reminder.schedule_type !== 'weekly' && reminder.remind_at
-    ? `${new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date(reminder.remind_at))} · ${timeRange}`
-    : `${reminder.days_of_week.map((day) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][day]).join(', ')} · ${timeRange}`
+    ? `${new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date(reminder.remind_at))} · ${reminder.all_day ? 'All day' : timeRange}`
+    : `${reminder.days_of_week.map((day) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][day]).join(', ')} · ${reminder.all_day ? 'All day' : timeRange}`
   const now = new Date()
   const due = isReminderDue(reminder, now)
   const completed = isStudyReminderComplete(reminder, now)
@@ -1240,7 +1058,7 @@ function StudyReminderRow({ reminder, onEdit, onToggle, onDelete, onFocus, onCom
   </article>
 }
 
-function StudyReminderDialog({ reminder, initialDateTime, onClose, onSave }: {
+export function StudyReminderDialog({ reminder, initialDateTime, onClose, onSave }: {
   reminder: StudyReminder | null
   initialDateTime: string
   onClose: () => void
@@ -1256,6 +1074,7 @@ function StudyReminderDialog({ reminder, initialDateTime, onClose, onSave }: {
     : (reminder?.remind_time ?? initialTime ?? '18:00')
   const [time, setTime] = useState(initialStartTime)
   const [endTime, setEndTime] = useState(reminder?.remind_end_time?.slice(0, 5) ?? getDefaultStudyEndTime(initialStartTime))
+  const [allDay, setAllDay] = useState(reminder?.all_day ?? false)
   const [days, setDays] = useState<number[]>(reminder?.days_of_week.length ? reminder.days_of_week : [1, 3, 5])
   const [busy, setBusy] = useState(false)
   const [formError, setFormError] = useState('')
@@ -1270,17 +1089,19 @@ function StudyReminderDialog({ reminder, initialDateTime, onClose, onSave }: {
       setFormError('Choose at least one day for your weekly study reminder.')
       return
     }
-    if (endTime === time) {
+    if (!allDay && endTime === time) {
       setFormError('Choose a different end time. An earlier end time will schedule the reminder overnight.')
       return
     }
-    if (scheduleType !== 'weekly' && new Date(`${date}T${time}`).getTime() <= Date.now()) {
+    if (scheduleType !== 'weekly' && (allDay
+      ? date < localDateKey(new Date())
+      : new Date(`${date}T${time}`).getTime() <= Date.now())) {
       setFormError('Choose a first study time in the future.')
       return
     }
     setFormError('')
     setBusy(true)
-    const saved = await onSave({ subject, topic, schedule_type: scheduleType, date, time, end_time: endTime, days_of_week: days })
+    const saved = await onSave({ subject, topic, schedule_type: scheduleType, date, time, end_time: endTime, all_day: allDay, days_of_week: days })
     setBusy(false)
     if (saved) onClose()
   }
@@ -1292,9 +1113,9 @@ function StudyReminderDialog({ reminder, initialDateTime, onClose, onSave }: {
     <label>What will you study? <span className="optional-label">OPTIONAL</span><input value={topic} onChange={(event) => setTopic(event.target.value)} placeholder="e.g. Review chapter 4 for Friday’s quiz" maxLength={160} /></label>
     <label>Study plan<select value={scheduleType} onChange={(event) => setScheduleType(event.target.value as 'once' | 'weekly' | 'spaced')}><option value="weekly">Every week</option><option value="once">One time</option><option value="spaced">Spaced repetition</option></select></label>
     {scheduleType === 'weekly' && <fieldset className="study-day-picker"><legend>Study on</legend>{[['M', 1], ['T', 2], ['W', 3], ['T', 4], ['F', 5], ['S', 6], ['S', 0]].map(([label, day], index) => <button key={`${day}-${index}`} type="button" className={days.includes(Number(day)) ? 'study-day selected' : 'study-day'} aria-pressed={days.includes(Number(day))} onClick={() => toggleDay(Number(day))}>{label}</button>)}</fieldset>}
-    {scheduleType === 'weekly'
-      ? <div className="form-row"><label>Start time<input type="time" value={time} onChange={(event) => { setTime(event.target.value); if (endTime <= event.target.value) setEndTime(getDefaultStudyEndTime(event.target.value)) }} required /></label><label>End time<input type="time" value={endTime} onChange={(event) => setEndTime(event.target.value)} required /></label></div>
-      : <><label>Date<input type="date" min={localDateKey(new Date())} value={date} onChange={(event) => setDate(event.target.value)} required /></label><div className="form-row"><label>Start time<input type="time" value={time} onChange={(event) => { setTime(event.target.value); if (endTime <= event.target.value) setEndTime(getDefaultStudyEndTime(event.target.value)) }} required /></label><label>End time<input type="time" value={endTime} onChange={(event) => setEndTime(event.target.value)} required /></label></div></>}
+    {scheduleType !== 'weekly' && <label>Date<input type="date" min={localDateKey(new Date())} value={date} onChange={(event) => setDate(event.target.value)} required /></label>}
+    <label className="study-all-day-toggle"><input type="checkbox" checked={allDay} onChange={(event) => setAllDay(event.target.checked)} /> All day</label>
+    {!allDay && <div className="form-row"><label>Start time<input type="time" value={time} onChange={(event) => { setTime(event.target.value); if (endTime <= event.target.value) setEndTime(getDefaultStudyEndTime(event.target.value)) }} required /></label><label>End time<input type="time" value={endTime} onChange={(event) => setEndTime(event.target.value)} required /></label></div>}
     {scheduleType === 'spaced' && <p className="spaced-plan-note">Your first review starts on this date. Mark it reviewed to schedule follow-ups at 1 day, 3 days, 1 week, 3 weeks, and longer intervals.</p>}
     {formError && <p className="form-error" role="alert">{formError}</p>}
     <div className="study-form-tip"><Sparkles size={14} /><span>{scheduleType === 'spaced' ? 'After each review, mark it complete and Daymark will automatically schedule the next interval.' : 'Short, repeated sessions are easier to stick with than last-minute cramming.'}</span></div>
@@ -1319,17 +1140,12 @@ function compareDueAt(a: string | null, b: string | null) {
   return new Date(a).getTime() - new Date(b).getTime()
 }
 
-function getReminderDateForDay(reminder: StudyReminder, day: Date) {
-  if (reminder.schedule_type !== 'weekly') {
-    return reminder.remind_at ? new Date(reminder.remind_at).getTime() : Number.MAX_SAFE_INTEGER
-  }
-  const [hours = '18', minutes = '00'] = (reminder.remind_time ?? '18:00').split(':')
-  return new Date(day.getFullYear(), day.getMonth(), day.getDate(), Number(hours), Number(minutes)).getTime()
-}
-
 function isReminderDue(reminder: StudyReminder, now: Date) {
   if (!reminder.enabled) return false
-  if (reminder.schedule_type !== 'weekly') return Boolean(reminder.remind_at && new Date(reminder.remind_at).getTime() <= now.getTime())
+  if (reminder.schedule_type !== 'weekly') return Boolean(reminder.remind_at && (reminder.all_day
+    ? localDateKey(new Date(reminder.remind_at)) <= localDateKey(now)
+    : new Date(reminder.remind_at).getTime() <= now.getTime()))
+  if (reminder.all_day) return reminder.days_of_week.includes(now.getDay())
   const time = reminder.remind_time?.slice(0, 5) ?? '23:59'
   const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
   return reminder.days_of_week.includes(now.getDay()) && currentTime >= time
@@ -1352,7 +1168,7 @@ function getNextReminderDate(reminder: StudyReminder, now: Date): Date | null {
     const date = reminder.remind_at ? new Date(reminder.remind_at) : null
     return date && date > now ? date : null
   }
-  const [hours = '18', minutes = '00'] = (reminder.remind_time ?? '18:00').split(':')
+  const [hours = '18', minutes = '00'] = (reminder.all_day ? '00:00' : reminder.remind_time ?? '18:00').split(':')
   for (let offset = 0; offset < 8; offset += 1) {
     const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset, Number(hours), Number(minutes))
     if (reminder.days_of_week.includes(date.getDay()) && date > now) return date
@@ -1362,10 +1178,11 @@ function getNextReminderDate(reminder: StudyReminder, now: Date): Date | null {
 
 function getReminderSortDate(reminder: StudyReminder, now: Date): Date | null {
   if (reminder.schedule_type !== 'weekly') return reminder.remind_at ? new Date(reminder.remind_at) : null
-  const [hours = '18', minutes = '00'] = (reminder.remind_time ?? '18:00').split(':')
+  const [hours = '18', minutes = '00'] = (reminder.all_day ? '00:00' : reminder.remind_time ?? '18:00').split(':')
   const nextDate = getNextReminderDate(reminder, now)
   if (nextDate) return nextDate
   if (!reminder.days_of_week.includes(now.getDay())) return null
+  if (reminder.all_day) return new Date(now.getFullYear(), now.getMonth(), now.getDate())
   return new Date(now.getFullYear(), now.getMonth(), now.getDate(), Number(hours), Number(minutes))
 }
 
@@ -1700,9 +1517,8 @@ function PeriodCard({ label, count, detail, selected, icon, onClick }: {
   </button>
 }
 
-function FocusTimerPanel({ task, studyReminder, duration, remaining, running, phase, breakAvailable, onSetMinutes, onToggle, onReset, onStartBreak, onOpenTask, onCompleteTask, onOpenStudy, onCompleteStudy, studyBusy, taskBusy, onAddTask, todayProgress, todayProgressLabel }: {
+function FocusTimerPanel({ task, duration, remaining, running, phase, breakAvailable, onSetMinutes, onToggle, onReset, onStartBreak, onOpenTask, onCompleteTask, taskBusy, onAddTask, todayProgress, todayProgressLabel }: {
   task?: Task
-  studyReminder?: StudyReminder
   duration: number
   remaining: number
   running: boolean
@@ -1714,9 +1530,6 @@ function FocusTimerPanel({ task, studyReminder, duration, remaining, running, ph
   onStartBreak: () => void
   onOpenTask?: () => void
   onCompleteTask?: () => void
-  onOpenStudy?: () => void
-  onCompleteStudy?: () => void
-  studyBusy: boolean
   taskBusy: boolean
   onAddTask: () => void
   todayProgress: number
@@ -1727,24 +1540,19 @@ function FocusTimerPanel({ task, studyReminder, duration, remaining, running, ph
   const offset = circumference * (1 - (timerDuration - remaining) / timerDuration)
   const minutes = Math.floor(remaining / 60).toString().padStart(2, '0')
   const seconds = (remaining % 60).toString().padStart(2, '0')
-  const focusTitle = task?.title ?? (studyReminder ? studyReminder.topic || studyReminder.subject : null)
+  const focusTitle = task?.title
   const focusDetails = task
     ? `${task.due_at ? `Due ${fullDate.format(new Date(task.due_at))}` : 'No due date'} · ${task.priority} priority. For this session, stay with this one thing.`
-    : studyReminder
-      ? `${studyReminder.subject} · A focused Pomodoro for this study session.`
-      : null
+    : null
 
   return <section className="focus-panel" aria-label="Focus timer">
     <div className="focus-copy">
-      <span className="focus-kicker"><Sparkles size={13} /> {phase === 'break' ? 'REST AND RESET' : studyReminder ? 'STUDY FOCUS' : 'YOUR NEXT SMALL WIN'}</span>
+      <span className="focus-kicker"><Sparkles size={13} /> {phase === 'break' ? 'REST AND RESET' : 'YOUR NEXT SMALL WIN'}</span>
       <h2>{focusTitle ?? 'Start with one small thing.'}</h2>
       <p>{phase === 'break' ? 'Step away from your screen, stretch, and come back when the timer ends.' : focusDetails ?? 'Choose a task below, or add one to begin a focused session.'}</p>
       {task ? <div className="focus-task-actions">
         <button className="focus-open-button" onClick={onOpenTask}>View task</button>
         {onCompleteTask && <button className="focus-done-button" onClick={onCompleteTask} disabled={taskBusy}><Check size={15} /> Mark done</button>}
-      </div> : studyReminder ? <div className="focus-task-actions">
-        <button className="focus-open-button" onClick={onOpenStudy}>View study schedule</button>
-        {onCompleteStudy && <button className="focus-done-button" onClick={onCompleteStudy} disabled={studyBusy || isStudyReminderComplete(studyReminder, new Date())}><Check size={15} /> {isStudyReminderComplete(studyReminder, new Date()) ? 'Study complete' : 'Mark complete'}</button>}
       </div> : <button className="focus-done-button" onClick={onAddTask}><Plus size={15} /> Add a task</button>}
     </div>
     <div className="focus-timer">
@@ -1761,7 +1569,7 @@ function FocusTimerPanel({ task, studyReminder, duration, remaining, running, ph
           {[15, 25, 50].map((minutesOption) => <button key={minutesOption} className={phase === 'focus' && duration === minutesOption * 60 ? 'selected' : ''} onClick={() => onSetMinutes(minutesOption)} disabled={running || phase === 'break'}>{minutesOption}m</button>)}
         </div>
         <div className="focus-timer-buttons">
-          <button className="focus-timer-start" onClick={onToggle} disabled={(!task && !studyReminder) || (remaining === 0 && !running)} aria-label={running ? 'Pause timer' : 'Start timer'}>{running ? <Pause size={15} /> : <Play size={15} />}{running ? 'Pause' : 'Start focus'}</button>
+          <button className="focus-timer-start" onClick={onToggle} disabled={(!task && !running) || (remaining === 0 && !running)} aria-label={running ? 'Pause timer' : 'Start timer'}>{running ? <Pause size={15} /> : <Play size={15} />}{running ? 'Pause' : 'Start focus'}</button>
           <button className="focus-timer-reset" onClick={onReset} aria-label="Reset timer"><RotateCcw size={15} /></button>
         </div>
         {breakAvailable && <button className="focus-break-button" onClick={onStartBreak}><Timer size={14} /> Take a 5-minute break</button>}
@@ -1837,7 +1645,7 @@ function TaskGroup({ title, tasks, completed, onToggle, onToggleSubtask, onEdit,
   </div></section>
 }
 
-function CalendarView({ studyReminders, month, setMonth, calendarView, setCalendarView, onAdd, onEdit }: {
+export function CalendarView({ studyReminders, month, setMonth, calendarView, setCalendarView, onAdd, onEdit }: {
   studyReminders: StudyReminder[]
   month: Date
   setMonth: (date: Date) => void
@@ -1868,8 +1676,8 @@ function CalendarView({ studyReminders, month, setMonth, calendarView, setCalend
     [...cells.filter((date): date is Date => date !== null), ...weekDays]
       .map((date) => [localDateKey(date), date]),
   ).values())
-  const itemsByDate = new Map<string, { key: string; title: string; subject: string; completed: boolean; reminder: StudyReminder; dueAt: string; endAt: string }[]>()
-  function addCalendarItem(date: string, item: { key: string; title: string; subject: string; completed: boolean; reminder: StudyReminder; dueAt: string; endAt: string }) {
+  const itemsByDate = new Map<string, { key: string; title: string; subject: string; completed: boolean; reminder: StudyReminder; dueAt: string; endAt: string; allDay: boolean }[]>()
+  function addCalendarItem(date: string, item: { key: string; title: string; subject: string; completed: boolean; reminder: StudyReminder; dueAt: string; endAt: string; allDay: boolean }) {
     const items = itemsByDate.get(date) ?? []
     items.push(item)
     itemsByDate.set(date, items)
@@ -1878,9 +1686,11 @@ function CalendarView({ studyReminders, month, setMonth, calendarView, setCalend
     if (reminder.schedule_type === 'weekly') {
       calendarDates.forEach((date) => {
         if (!reminder.days_of_week.includes(date.getDay())) return
-        const [hours = '18', minutes = '0'] = (reminder.remind_time ?? '18:00').split(':')
+        const [hours = '18', minutes = '0'] = (reminder.all_day ? '00:00' : reminder.remind_time ?? '18:00').split(':')
         const startAt = new Date(date.getFullYear(), date.getMonth(), date.getDate(), Number(hours), Number(minutes))
-        let endAt = reminder.remind_end_time
+        let endAt = reminder.all_day
+          ? new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1)
+          : reminder.remind_end_time
           ? (() => {
               const [endHours = '18', endMinutes = '45'] = reminder.remind_end_time.split(':')
               return new Date(date.getFullYear(), date.getMonth(), date.getDate(), Number(endHours), Number(endMinutes))
@@ -1896,26 +1706,33 @@ function CalendarView({ studyReminders, month, setMonth, calendarView, setCalend
           reminder,
           dueAt: startAt.toISOString(),
           endAt: endAt.toISOString(),
+          allDay: reminder.all_day,
         })
       })
     } else if (reminder.remind_at) {
       const date = new Date(reminder.remind_at)
       const key = localDateKey(date)
-      let endAt = reminder.remind_end_time
+      const startAt = reminder.all_day
+        ? new Date(date.getFullYear(), date.getMonth(), date.getDate())
+        : date
+      let endAt = reminder.all_day
+        ? new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1)
+        : reminder.remind_end_time
         ? (() => {
             const [endHours = '18', endMinutes = '45'] = reminder.remind_end_time.split(':')
             return new Date(date.getFullYear(), date.getMonth(), date.getDate(), Number(endHours), Number(endMinutes))
           })()
-        : new Date(date.getTime() + 45 * 60_000)
-      if (endAt <= date && reminder.remind_end_time) endAt.setDate(endAt.getDate() + 1)
+        : new Date(startAt.getTime() + 45 * 60_000)
+      if (endAt <= startAt && reminder.remind_end_time) endAt.setDate(endAt.getDate() + 1)
       addCalendarItem(key, {
         key: reminder.id,
         title: reminder.topic || reminder.subject,
         subject: reminder.subject,
         completed: reminder.completed_on === key,
         reminder,
-        dueAt: reminder.remind_at,
+        dueAt: startAt.toISOString(),
         endAt: endAt.toISOString(),
+        allDay: reminder.all_day,
       })
     }
   })
@@ -1941,6 +1758,7 @@ function CalendarView({ studyReminders, month, setMonth, calendarView, setCalend
     })).sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime())
     const lanes: number[] = []
     const timedItems = dayItems
+      .filter((item) => !item.allDay)
       .map((item) => {
         const dateTime = new Date(item.dueAt!)
         const start = dateTime.getHours() * 60 + dateTime.getMinutes()
@@ -1982,8 +1800,11 @@ function CalendarView({ studyReminders, month, setMonth, calendarView, setCalend
       </div>
       <div className="week-all-day">
         <div className="week-all-day-label">all-day</div>
-        {weekAgenda.map(({ date, key }) => <div className={`week-all-day-cell ${key === todayKey ? 'today' : ''}`} key={key}>
+        {weekAgenda.map(({ date, key, items }) => <div className={`week-all-day-cell ${key === todayKey ? 'today' : ''}`} key={key}>
           <button className="week-agenda-add" aria-label={`Add reminder on ${fullDate.format(date)}`} onClick={() => onAdd(`${key}T09:00`)}><Plus size={13} /></button>
+          {items.filter((item) => item.allDay).map((item) => <button key={item.key} className={`week-agenda-task ${item.completed ? 'done' : 'study'}`} onClick={() => onEdit(item.reminder)} title={`${item.description} · ${item.title}`}>
+            <span className="week-agenda-task-title">{item.title}</span><span className="week-agenda-time">All day</span>
+          </button>)}
         </div>)}
       </div>
       <div className="week-time-grid">
@@ -2005,7 +1826,7 @@ function CalendarView({ studyReminders, month, setMonth, calendarView, setCalend
             return <button key={item.key} className={`week-agenda-task ${item.completed ? 'done' : 'study'}`} style={{ top: `${top}px`, height: `${height}px`, left: `calc(${item.lane * 100 / item.laneCount}% + 2px)`, width: `calc(${100 / item.laneCount}% - 4px)` }} onClick={(event) => { event.stopPropagation(); onEdit(item.reminder) }} title={item.description ? `${item.description} · ${item.title}` : item.title}>
               <span className="week-agenda-task-title">{item.title}</span>
               {item.description && <span className="week-agenda-task-description">{item.description}</span>}
-              <span className="week-agenda-time"><Clock3 size={10} />{new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(time)} – {new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(end)}{end.getDate() !== time.getDate() ? ' · +1 day' : ''}</span>
+              <span className="week-agenda-time"><Clock3 size={10} />{item.allDay ? 'All day' : <>{new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(time)} – {new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(end)}{end.getDate() !== time.getDate() ? ' · +1 day' : ''}</>}</span>
               {item.completed && <Check size={12} />}
             </button>
           })}

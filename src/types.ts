@@ -5,6 +5,7 @@ export type TaskSubtask = {
   user_id: string
   task_id: string
   title: string
+  day_order: number | null
   due_at: string | null
   completed_at: string | null
   created_at: string
@@ -23,6 +24,7 @@ export type Task = {
   title: string
   description: string
   due_at: string | null
+  day_order: number | null
   priority: Priority
   category: string
   completed_at: string | null
@@ -48,6 +50,7 @@ export type StudyReminder = {
   remind_at: string | null
   remind_time: string | null
   remind_end_time: string | null
+  all_day: boolean
   days_of_week: number[]
   completed_on: string | null
   review_count: number
@@ -62,6 +65,7 @@ export type StudyReminderDraft = {
   date: string
   time: string
   end_time: string
+  all_day: boolean
   days_of_week: number[]
 }
 
