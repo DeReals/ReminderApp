@@ -73,7 +73,7 @@ export function scheduleRecall(topic: StudyTopic, rating: RecallRating, now: Dat
   const previous = restoreCard(topic.fsrs_state, now)
   const result = scheduler.next(previous, now, ratingValues[rating])
   const nextCard: Card = result.card
-  const predictedRecall = Number(scheduler.get_retrievability(nextCard, now))
+  const predictedRecall = scheduler.retrievability(nextCard, now)
 
   return {
     card: nextCard,
@@ -104,7 +104,7 @@ export function nextLocalDate(date: Date, days: number) {
 export function getReadiness(topic: StudyTopic, examDate: string | null, now: Date) {
   if (!examDate || !topic.fsrs_state) return null
   const card = restoreCard(topic.fsrs_state, now)
-  return Number(scheduler.get_retrievability(card, dateFromKey(examDate)))
+  return scheduler.retrievability(card, dateFromKey(examDate))
 }
 
 export function planExamAwareDueDate(
