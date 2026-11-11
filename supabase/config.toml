@@ -1,0 +1,2 @@
+[functions.study-feed]
+verify_jwt = false
