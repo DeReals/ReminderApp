@@ -4,12 +4,14 @@ import {
   dateFromKey,
   findFreeSlots,
   generateStudyOccurrences,
+  listAvailableStudySlots,
   localDateKey,
   nextLocalDate,
   parseQuickAddText,
   planExamAwareDueDate,
   scaleIntervalForExam,
   scheduleRecall,
+  suggestStudySlots,
 } from './scheduling'
 import type { StudyAvailability, StudySession, StudySubject, StudyTopic } from './types'
 
@@ -165,6 +167,7 @@ describe('study queue scheduling', () => {
     const availability: StudyAvailability[] = [{
       id: 'window',
       user_id: 'user-1',
+      week_start: '2026-04-05',
       label: 'Free time',
       weekday: 0,
       start_time: '09:00',
@@ -177,6 +180,98 @@ describe('study queue scheduling', () => {
 
     expect(slots.map((slot) => slot.start)).toEqual(['10:15', '10:30', '10:45'])
     expect(findFreeSlots('2026-04-05', availability, [existing], 90, 100)).toEqual([])
+  })
+
+  it('lists available gaps of at least 30 minutes between 8 AM and 10 PM', () => {
+    const availability: StudyAvailability[] = [{
+      id: 'window',
+      user_id: 'user-1',
+      week_start: '2026-04-05',
+      label: 'Sunday study window',
+      weekday: 0,
+      start_time: '07:00',
+      end_time: '23:00',
+      active: true,
+    }]
+    const existing = session('busy', 'other', '2026-04-05', '09:30')
+
+    const slots = listAvailableStudySlots(['2026-04-05'], availability, [existing])
+
+    expect(slots).toEqual([
+      { date: '2026-04-05', start: '08:00', end: '09:30', maxDurationMinutes: 90 },
+      { date: '2026-04-05', start: '10:15', end: '22:00', maxDurationMinutes: 705 },
+    ])
+    expect(listAvailableStudySlots(['2026-04-05'], availability, [existing], 120)).toHaveLength(1)
+  })
+
+  it('does not reuse availability saved for a different week', () => {
+    const availability: StudyAvailability[] = [{
+      id: 'old-window',
+      user_id: 'user-1',
+      week_start: '2026-03-29',
+      label: 'Last week',
+      weekday: 0,
+      start_time: '09:00',
+      end_time: '12:00',
+      active: true,
+    }]
+
+    expect(listAvailableStudySlots(['2026-04-05'], availability, [])).toEqual([])
+  })
+
+  it('suggests recurring study in an available gap after existing calendar sessions', () => {
+    const availability: StudyAvailability[] = [{
+      id: 'window',
+      user_id: 'user-1',
+      week_start: '2026-04-05',
+      label: 'Sunday study window',
+      weekday: 0,
+      start_time: '09:00',
+      end_time: '12:00',
+      active: true,
+    }]
+    const recurring = topic('recurring', { repeat_weekdays: [0] })
+    const existing = session('busy', 'other', '2026-04-05', '09:00')
+
+    expect(suggestStudySlots([recurring], ['2026-04-05'], availability, [existing], 180))
+      .toEqual([{ topic: recurring, date: '2026-04-05', start: '09:45', end: '10:30' }])
+  })
+
+  it('suggests a one-off topic once in the current planning range', () => {
+    const availability: StudyAvailability[] = [0, 1].map((weekday) => ({
+      id: `window-${weekday}`,
+      user_id: 'user-1',
+      week_start: '2026-04-05',
+      label: 'Study window',
+      weekday,
+      start_time: '09:00',
+      end_time: '12:00',
+      active: true,
+    }))
+    const oneOff = topic('one-off')
+
+    expect(suggestStudySlots([oneOff], ['2026-04-05', '2026-04-06'], availability, [], 180))
+      .toHaveLength(1)
+  })
+
+  it('suggests an overdue review once instead of repeating it every day', () => {
+    const availability: StudyAvailability[] = [0, 1].map((weekday) => ({
+      id: `window-${weekday}`,
+      user_id: 'user-1',
+      week_start: '2026-04-05',
+      label: 'Study window',
+      weekday,
+      start_time: '09:00',
+      end_time: '12:00',
+      active: true,
+    }))
+    const overdueReview = topic('overdue-review', {
+      spaced_repetition: true,
+      next_due_date: '2026-04-04',
+    })
+
+    expect(suggestStudySlots([overdueReview], ['2026-04-05', '2026-04-06'], availability, [], 180))
+      .toHaveLength(1)
   })
 
   it('caps exam reviews and graduates topics after the term', () => {

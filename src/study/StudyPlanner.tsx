@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
 
 function Modal({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
   const modalRef = useRef<HTMLElement | null>(null)
@@ -172,23 +172,90 @@ function SubjectEditor({ subject, busy, onCancel, onSave }: {
 
 function AvailabilityEditor({ onCancel, onSave }: {
   onCancel: () => void
-  onSave: (draft: Omit<StudyAvailability, 'id' | 'user_id' | 'active'>) => Promise<void>
+  onSave: (draft: Omit<StudyAvailability, 'id' | 'user_id' | 'active' | 'week_start'>) => Promise<void>
 }) {
   const [label, setLabel] = useState('Study window')
   const [weekday, setWeekday] = useState(new Date().getDay())
   const [start, setStart] = useState('17:00')
   const [end, setEnd] = useState('20:00')
-  return <Modal title="Add weekly study window" onClose={onCancel}>
+  return <Modal title="Add availability for this week" onClose={onCancel}>
     <form className="sp-form" onSubmit={(event) => {
       event.preventDefault()
       if (start >= end) return
       void onSave({ label: label.trim() || 'Study window', weekday, start_time: start, end_time: end })
     }}>
+      <p className="sp-field-hint">This window applies to the current Sunday–Saturday week only.</p>
       <label>Window name<input value={label} onChange={(event) => setLabel(event.target.value)} /></label>
       <label>Day<select value={weekday} onChange={(event) => setWeekday(Number(event.target.value))}>{weekdayNames.map((day, index) => <option value={index} key={day}>{day}</option>)}</select></label>
       <div className="sp-form-grid"><label>From<input type="time" value={start} onChange={(event) => setStart(event.target.value)} /></label><label>To<input type="time" value={end} onChange={(event) => setEnd(event.target.value)} /></label></div>
       {start >= end && <p className="sp-field-error" role="alert">End time must be after start time.</p>}
       <div className="sp-modal-actions"><button className="button" type="button" onClick={onCancel}>Cancel</button><button className="button button-primary" type="submit" disabled={start >= end}>Save window</button></div>
+    </form>
+  </Modal>
+}
+
+function StudySlotPicker({ slots, busy, error, onCancel, onAddAvailability, onSelect }: {
+  slots: AvailableStudySlot[]
+  busy: boolean
+  error: string
+  onCancel: () => void
+  onAddAvailability: () => void
+  onSelect: (slot: AvailableStudySlot) => void
+}) {
+  return <Modal title="Choose a study slot" onClose={onCancel}>
+    <div className="sp-slot-picker">
+      <p>Free gaps from 8 AM to 10 PM, including weekdays and weekends. Choose a gap of at least 30 minutes, then name your session and choose its length.</p>
+      {error && <div className="sp-alert sp-error" role="alert">{error}</div>}
+      {slots.length
+        ? <div className="sp-slot-picker-list">{slots.map((slot) => <button className="sp-slot-choice" type="button" key={`${slot.date}-${slot.start}`} disabled={busy} onClick={() => onSelect(slot)}>
+            <span className="sp-slot-choice-copy">
+              <strong>{new Intl.DateTimeFormat('en', { weekday: 'long', month: 'short', day: 'numeric' }).format(dateFromKey(slot.date))}</strong>
+              <span>Free for up to {slot.maxDurationMinutes} minutes</span>
+            </span>
+            <span className="sp-slot-choice-time">{slot.start}–{slot.end}<small>Free time</small></span>
+            <ArrowRight size={15} />
+          </button>)}</div>
+        : <div className="sp-empty"><strong>No free slots found this week</strong><span>Adjust your availability or existing sessions, then try again.</span></div>}
+      <div className="sp-modal-actions">
+        <button className="button" type="button" onClick={onCancel} disabled={busy}>Close</button>
+        <button className="button" type="button" onClick={onAddAvailability} disabled={busy}>Set this week's availability</button>
+      </div>
+    </div>
+  </Modal>
+}
+
+function StudySessionEditor({ slot, subjects, busy, error, onCancel, onAddSubject, onSave }: {
+  slot: AvailableStudySlot
+  subjects: StudySubject[]
+  busy: boolean
+  error: string
+  onCancel: () => void
+  onAddSubject: () => void
+  onSave: (title: string, subjectId: string, durationMinutes: number, slot: AvailableStudySlot) => Promise<boolean>
+}) {
+  const [title, setTitle] = useState('')
+  const [subjectId, setSubjectId] = useState(subjects[0]?.id ?? '')
+  const [durationMinutes, setDurationMinutes] = useState(Math.min(45, slot.maxDurationMinutes))
+
+  return <Modal title="Name your study session" onClose={onCancel}>
+    <form className="sp-form" onSubmit={(event) => {
+      event.preventDefault()
+      void onSave(title.trim(), subjectId, durationMinutes, slot)
+    }}>
+      <div className="sp-session-slot-summary">
+        <strong>{new Intl.DateTimeFormat('en', { weekday: 'long', month: 'short', day: 'numeric' }).format(dateFromKey(slot.date))}</strong>
+        <span>Free: {slot.start}–{slot.end} · up to {slot.maxDurationMinutes} minutes</span>
+      </div>
+      {error && <div className="sp-alert sp-error" role="alert">{error}</div>}
+      <label>Session name<input autoFocus maxLength={100} required value={title} onChange={(event) => setTitle(event.target.value)} placeholder="e.g. Review lecture notes" /></label>
+      <label>Session length (minutes)<input type="number" min={30} max={slot.maxDurationMinutes} step={1} required value={durationMinutes} onChange={(event) => setDurationMinutes(Number(event.target.value))} /></label>
+      {subjects.length
+        ? <label>Subject<select required value={subjectId} onChange={(event) => setSubjectId(event.target.value)}>{subjects.map((subject) => <option value={subject.id} key={subject.id}>{subject.name}</option>)}</select></label>
+        : <div className="sp-empty"><strong>Add a subject first</strong><span>Study sessions need a subject in your planner.</span><button className="button" type="button" onClick={onAddSubject}>Add subject</button></div>}
+      <div className="sp-modal-actions">
+        <button className="button" type="button" onClick={onCancel} disabled={busy}>Cancel</button>
+        <button className="button button-primary" type="submit" disabled={busy || !title.trim() || !subjectId || durationMinutes < 30 || durationMinutes > slot.maxDurationMinutes}>{busy ? 'Saving…' : 'Add to calendar'}</button>
+      </div>
     </form>
   </Modal>
 }
@@ -238,8 +305,37 @@ function WeeklyReviewDialog({ done, planned, missed, onClose }: {
   </Modal>
 }
 
+function CalendarSessionDialog({ session, topic, subject, busy, onCancel, onEdit, onRemove }: {
+  session: StudySession
+  topic: StudyTopic | null
+  subject: StudySubject | null
+  busy: boolean
+  onCancel: () => void
+  onEdit: () => void
+  onRemove: (session: StudySession) => Promise<boolean>
+}) {
+  const canRemove = ['planned', 'snoozed'].includes(session.status)
+  return <Modal title="Study session" onClose={onCancel}>
+    <div className="sp-form">
+      <div className="sp-session-slot-summary">
+        <strong>{topic?.title ?? 'Study session'}</strong>
+        <span>{subject?.name ?? 'Study'} · {new Intl.DateTimeFormat('en', { weekday: 'long', month: 'short', day: 'numeric' }).format(dateFromKey(session.scheduled_date))}</span>
+        <span>{session.scheduled_time?.slice(0, 5) ?? 'Anytime'} · {session.duration_minutes} minutes · {session.status.charAt(0).toUpperCase() + session.status.slice(1)}</span>
+        {topic?.goal && <span className="sp-calendar-plan-detail">Goal: {topic.goal}</span>}
+        {topic?.first_step && <span className="sp-calendar-plan-detail">Start with: {topic.first_step}</span>}
+      </div>
+      {canRemove && <p className="sp-field-hint">Removing this occurrence won’t change the recurring study plan.</p>}
+      <div className="sp-modal-actions">
+        <button className="button" type="button" onClick={onCancel} disabled={busy}>Close</button>
+        {topic && <button className="button" type="button" onClick={onEdit} disabled={busy}>Edit study plan</button>}
+        {canRemove && <button className="button sp-remove-session" type="button" onClick={() => void onRemove(session)} disabled={busy}><Trash2 size={13} /> Remove from calendar</button>}
+      </div>
+    </div>
+  </Modal>
+}
+
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { ArrowRight, BookOpen, Check, MoreHorizontal, Play, Plus, Search, Sparkles, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, BookOpen, Check, MoreHorizontal, Play, Plus, Search, Sparkles, Trash2, X } from 'lucide-react'
 import { enqueueOfflineAction, readOfflineActions, readPlannerSnapshot, savePlannerSnapshot, syncOfflineActions } from './offline'
 import {
   buildTodayQueue,
@@ -251,6 +347,7 @@ import {
   getNextStudyDate,
   getReadiness,
   getRecallTrend,
+  listAvailableStudySlots,
   localDateKey,
   nextLocalDate,
   planExamAwareDueDate,
@@ -258,6 +355,7 @@ import {
   scheduleRecall,
   scaleIntervalForExam,
 } from './scheduling'
+import type { AvailableStudySlot } from './scheduling'
 import type { QueuedStudySession, RecallRating, StudyAvailability, StudyPreferences, StudyReview, StudySession, StudySubject, StudyTopic } from './types'
 
 type Props = { client: SupabaseClient; userId: string; initialScreen?: Screen }
@@ -282,6 +380,11 @@ function dateOffset(date: string, days: number) {
 
 function timeInputValue(date: Date) {
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
+
+function clockLabel(minutes: number) {
+  return new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' })
+    .format(new Date(2000, 0, 1, Math.floor(minutes / 60), minutes % 60))
 }
 
 function minutesSince(start: string | null, now: number) {
@@ -654,12 +757,14 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [screen, setScreen] = useState<Screen>(initialScreen)
+  const [calendarDate, setCalendarDate] = useState(today())
   const [search, setSearch] = useState('')
   const [topicDialog, setTopicDialog] = useState(false)
   const [subjectDialog, setSubjectDialog] = useState(false)
   const [editingTopic, setEditingTopic] = useState<StudyTopic | null>(null)
   const [editingSubject, setEditingSubject] = useState<StudySubject | null>(null)
   const [closeout, setCloseout] = useState<QueuedStudySession | null>(null)
+  const [selectedCalendarSession, setSelectedCalendarSession] = useState<StudySession | null>(null)
   const [rating, setRating] = useState<RecallRating>('good')
   const [reviewNote, setReviewNote] = useState('')
   const [activeSession, setActiveSession] = useState<QueuedStudySession | null>(null)
@@ -667,12 +772,16 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
   const [topicToSkip, setTopicToSkip] = useState<StudyTopic | null>(null)
   const [skipDate, setSkipDate] = useState(dateOffset(today(), 7))
   const [availabilityDialog, setAvailabilityDialog] = useState(false)
+  const [slotPickerOpen, setSlotPickerOpen] = useState(false)
+  const [selectedStudySlot, setSelectedStudySlot] = useState<AvailableStudySlot | null>(null)
   const [showQuickAdd, setShowQuickAdd] = useState(false)
   const [quickText, setQuickText] = useState('')
   const [weeklyReviewOpen, setWeeklyReviewOpen] = useState(false)
   const notificationPermission: NotificationPermission | 'unsupported' =
     typeof Notification === 'undefined' ? 'unsupported' : Notification.permission
   const todayKey = today()
+  const currentWeekStart = dateOffset(todayKey, -dateFromKey(todayKey).getDay())
+  const historyStartDate = dateOffset(todayKey, -365)
   const throughDate = dateOffset(todayKey, 40)
 
   function applyPendingActions(snapshot: {
@@ -706,7 +815,7 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
       client.from('study_subjects').select('*').eq('user_id', userId).order('name'),
       client.from('study_topics').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
       client.from('study_preferences').select('*').eq('user_id', userId).maybeSingle(),
-      client.from('study_availability').select('*').eq('user_id', userId).order('weekday').order('start_time'),
+      client.from('study_availability').select('*').eq('user_id', userId).eq('week_start', currentWeekStart).order('weekday').order('start_time'),
     ])
     const initialError = subjectsResult.error || topicsResult.error || preferencesResult.error || availabilityResult.error
     if (initialError) {
@@ -718,7 +827,7 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
           setTopics(snapshot.topics)
           setSessions(snapshot.sessions)
           setReviews(snapshot.reviews)
-          setAvailability(snapshot.availability)
+          setAvailability(snapshot.availability.filter((item) => item.week_start === currentWeekStart))
           setPreferences(snapshot.preferences)
           setNoticeMessage('Offline mode: showing your saved planner. Actions will sync when you reconnect.')
           setLoading(false)
@@ -749,10 +858,9 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
       nextPreferences = data as StudyPreferences
     }
 
-    const fromDate = dateOffset(todayKey, -365)
     const existingResult = await client.from('study_sessions').select('*')
       .eq('user_id', userId)
-      .gte('scheduled_date', fromDate)
+      .gte('scheduled_date', historyStartDate)
       .lte('scheduled_date', throughDate)
       .order('scheduled_date')
       .order('scheduled_time')
@@ -784,7 +892,7 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
       }
       const refreshed = await client.from('study_sessions').select('*')
         .eq('user_id', userId)
-        .gte('scheduled_date', fromDate)
+        .gte('scheduled_date', historyStartDate)
         .lte('scheduled_date', throughDate)
         .order('scheduled_date')
         .order('scheduled_time')
@@ -798,7 +906,7 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
 
     const reviewsResult = await client.from('study_reviews').select('*')
       .eq('user_id', userId)
-      .gte('reviewed_at', `${fromDate}T00:00:00`)
+      .gte('reviewed_at', `${historyStartDate}T00:00:00`)
       .order('reviewed_at', { ascending: false })
     if (reviewsResult.error) {
       setError(`Could not load study history: ${reviewsResult.error.message}`)
@@ -1006,7 +1114,7 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
     session.scheduled_date > todayKey && session.scheduled_date <= throughDate && !['completed', 'skipped'].includes(session.status))
   const skippedTopics = topics.filter((topic) => !topic.archived_at && !topic.graduated_at && topic.skip_until && topic.skip_until >= todayKey)
   const overdueSessions = todayQueue.filter((item) => item.bucket === 'overdue')
-  const weekStart = dateOffset(todayKey, -new Date().getDay())
+  const weekStart = currentWeekStart
   const weekEnd = dateOffset(weekStart, 6)
   const weekSessions = sessions.filter((session) => session.scheduled_date >= weekStart && session.scheduled_date <= weekEnd)
   const completedWeekSessions = weekSessions.filter((session) => session.status === 'completed')
@@ -1083,6 +1191,17 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
       setErrorMessage(`Could not update study session: ${updateError.message}`)
       return false
     }
+    return true
+  }
+
+  async function removePlannedSession(session: StudySession): Promise<boolean> {
+    if (!['planned', 'snoozed'].includes(session.status)) return false
+    setBusy(true)
+    const removed = await updateSession(session, { status: 'skipped' })
+    setBusy(false)
+    if (!removed) return false
+    setSelectedCalendarSession(null)
+    setNoticeMessage('Study session removed from the calendar.')
     return true
   }
 
@@ -1312,27 +1431,82 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
     }
   }
 
-  async function scheduleSlot(topic: StudyTopic, date: string, time: string) {
-    const result = await client.from('study_sessions').upsert({
+  async function saveNamedStudySession(title: string, subjectId: string, durationMinutes: number, slot: AvailableStudySlot): Promise<boolean> {
+    const now = today()
+    const weekStart = dateOffset(now, -dateFromKey(now).getDay())
+    const weekEnd = dateOffset(weekStart, 6)
+    if (slot.date < weekStart || slot.date > weekEnd) {
+      setErrorMessage('Study sessions can only be added within the current week.')
+      return false
+    }
+    if (durationMinutes < 30 || durationMinutes > slot.maxDurationMinutes) {
+      setErrorMessage('Choose a session length that fits within the available time.')
+      return false
+    }
+    setBusy(true)
+    const topicResult = await client.from('study_topics').insert({
+      user_id: userId,
+      subject_id: subjectId,
+      legacy_reminder_id: null,
+      title,
+      repeat_weekdays: [],
+      spaced_repetition: false,
+      anytime_today: false,
+      start_date: slot.date,
+      start_time: slot.start,
+      duration_minutes: durationMinutes,
+      goal: '',
+      first_step: '',
+      materials_url: '',
+      next_due_date: null,
+      skip_until: null,
+    }).select().single()
+    if (topicResult.error) {
+      setBusy(false)
+      setErrorMessage(`Could not create this study session: ${topicResult.error.message}`)
+      return false
+    }
+
+    const topic = topicResult.data as StudyTopic
+    const sessionResult = await client.from('study_sessions').insert({
       user_id: userId,
       topic_id: topic.id,
-      scheduled_date: date,
-      scheduled_time: time,
-      duration_minutes: topic.duration_minutes,
-      reason: topic.spaced_repetition && topic.next_due_date === date ? 'both' : topic.spaced_repetition ? 'review' : 'study',
+      scheduled_date: slot.date,
+      scheduled_time: slot.start,
+      duration_minutes: durationMinutes,
+      reason: 'study',
       status: 'planned',
-    }, { onConflict: 'topic_id,scheduled_date' }).select().single()
-    if (result.error) {
-      setErrorMessage(`Could not schedule this session: ${result.error.message}`)
-      return
+      started_at: null,
+      ended_at: null,
+      actual_minutes: null,
+      snoozed_until: null,
+    }).select().single()
+    if (sessionResult.error) {
+      const cleanupResult = await client.from('study_topics').delete().eq('id', topic.id).eq('user_id', userId)
+      setBusy(false)
+      if (cleanupResult.error) {
+        setErrorMessage(`Could not create this study session: ${sessionResult.error.message}. The unused topic could not be removed: ${cleanupResult.error.message}`)
+        void load()
+      } else {
+        setErrorMessage(`Could not create this study session: ${sessionResult.error.message}`)
+      }
+      return false
     }
-    setSessions((current) => [...current.filter((item) => item.id !== result.data.id), result.data as StudySession])
-    setNoticeMessage('Session scheduled.')
+
+    setBusy(false)
+    setTopics((current) => [topic, ...current])
+    setSessions((current) => [...current.filter((item) => item.id !== sessionResult.data.id), sessionResult.data as StudySession])
+    setSelectedStudySlot(null)
+    setNoticeMessage('Study session added to this week.')
+    void load()
+    return true
   }
 
-  async function saveAvailability(draft: Omit<StudyAvailability, 'id' | 'user_id' | 'active'>) {
+  async function saveAvailability(draft: Omit<StudyAvailability, 'id' | 'user_id' | 'active' | 'week_start'>) {
+    const now = today()
+    const weekStart = dateOffset(now, -dateFromKey(now).getDay())
     const { data, error: insertError } = await client.from('study_availability')
-      .insert({ ...draft, user_id: userId, active: true }).select().single()
+      .insert({ ...draft, user_id: userId, week_start: weekStart, active: true }).select().single()
     if (insertError) setErrorMessage(`Could not save availability: ${insertError.message}`)
     else {
       setAvailability((current) => [...current, data as StudyAvailability])
@@ -1449,40 +1623,63 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
     return !search.trim() || `${topic.title} ${topic.goal} ${subject?.name ?? ''}`.toLowerCase().includes(search.trim().toLowerCase())
   })
   const subjectOptions = subjects.filter((subject) => !subject.archived_at)
-  const slotSuggestions = (() => {
-    const suggestions: { topic: StudyTopic; date: string; start: string; end: string }[] = []
-    for (let offset = 0; offset < 14 && suggestions.length < 8; offset += 1) {
-      const date = dateOffset(todayKey, offset)
-      const weekday = dateFromKey(date).getDay()
-      for (const topic of activeTopics) {
-        if (topic.skip_until && topic.skip_until >= date) continue
-        const planned = sessions.some((session) =>
-          session.topic_id === topic.id && session.scheduled_date === date && session.status !== 'skipped')
-        const due = topic.spaced_repetition && topic.next_due_date && topic.next_due_date <= date
-        const recurring = topic.repeat_weekdays.includes(weekday)
-        if (planned || (!due && !recurring)) continue
-        const slot = findFreeSlots(date, availability, [...sessions, ...suggestions.map((item) => ({
-          id: `suggested-${item.topic.id}-${item.date}-${item.start}`,
-          user_id: userId,
-          topic_id: item.topic.id,
-          scheduled_date: item.date,
-          scheduled_time: item.start,
-          duration_minutes: item.topic.duration_minutes,
-          reason: 'study' as const,
-          status: 'planned' as const,
-          started_at: null,
-          ended_at: null,
-          actual_minutes: null,
-          snoozed_until: null,
-          created_at: '',
-        }))], topic.duration_minutes, preferences.daily_cap_minutes, 1)[0]
-        if (slot) suggestions.push({ topic, date, start: slot.start, end: slot.end })
-        if (suggestions.length >= 8) break
-      }
+  const calendarWeekStart = dateOffset(calendarDate, -dateFromKey(calendarDate).getDay())
+  const calendarDays = Array.from({ length: 7 }, (_, index) => dateOffset(calendarWeekStart, index))
+  const calendarWeekEnd = calendarDays[6] ?? calendarWeekStart
+  const hasStudyAvailability = availability.some((window) => window.active)
+  const calendarSuggestionAvailability = hasStudyAvailability
+    ? availability
+    : weekdayNames.map((_, weekday) => ({
+        id: `suggested-window-${weekday}`,
+        user_id: userId,
+        week_start: currentWeekStart,
+        label: 'Suggested study hours',
+        weekday,
+        start_time: '08:00',
+        end_time: '22:00',
+        active: true,
+      }))
+  const currentWeekDates = Array.from({ length: 7 }, (_, index) => dateOffset(weekStart, index))
+  const currentWeekSlotSuggestions = listAvailableStudySlots(
+    currentWeekDates.filter((date) => date >= todayKey),
+    calendarSuggestionAvailability,
+    sessions,
+  )
+  const calendarTitle = calendarWeekStart.slice(0, 7) === calendarWeekEnd.slice(0, 7)
+    ? `${new Intl.DateTimeFormat('en', { month: 'long' }).format(dateFromKey(calendarWeekStart))} ${dateFromKey(calendarWeekStart).getDate()}–${dateFromKey(calendarWeekEnd).getDate()}, ${dateFromKey(calendarWeekEnd).getFullYear()}`
+    : `${new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric' }).format(dateFromKey(calendarWeekStart))} – ${new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric' }).format(dateFromKey(calendarWeekEnd))}`
+  const canPreviousCalendarWeek = dateOffset(calendarWeekStart, -7) >= historyStartDate
+  const canNextCalendarWeek = dateOffset(calendarWeekStart, 13) <= throughDate
+  const calendarAgenda = calendarDays.map((date) => {
+    const daySessions = sessions.filter((session) => session.scheduled_date === date && session.status !== 'skipped')
+    const items = daySessions.map((session) => {
+      const topic = topics.find((item) => item.id === session.topic_id)
+      return { session, topic, subject: topic && subjectFor(topic) }
+    })
+    const laneEnds: number[] = []
+    const timedItems = items
+      .filter((item) => item.session.scheduled_time)
+      .map((item) => ({ ...item, start: getMinutes(item.session.scheduled_time) ?? 0 }))
+      .sort((a, b) => a.start - b.start)
+      .map((item) => {
+        const availableLane = laneEnds.findIndex((laneEnd) => laneEnd <= item.start)
+        const lane = availableLane < 0 ? laneEnds.length : availableLane
+        laneEnds[lane] = Math.min(1440, item.start + item.session.duration_minutes)
+        return { ...item, lane }
+      })
+    const laneCount = Math.max(1, laneEnds.length)
+    return {
+      date,
+      day: dateFromKey(date).getDay(),
+      items,
+      allDayItems: items.filter((item) => !item.session.scheduled_time),
+      timedItems: timedItems.map((item) => ({ ...item, laneCount })),
+      availability: availability.filter((item) =>
+        item.active
+        && item.week_start === dateOffset(date, -dateFromKey(date).getDay())
+        && item.weekday === dateFromKey(date).getDay()),
     }
-    return suggestions
-  })()
-  const monthDays = Array.from({ length: 28 }, (_, index) => dateOffset(todayKey, index))
+  })
   const weeklyReviewSessions = sessions.filter((session) => session.scheduled_date >= dateOffset(todayKey, -6) && session.scheduled_date <= todayKey)
   const weeklyDone = weeklyReviewSessions.filter((session) => session.status === 'completed')
   const weeklyMissed = weeklyReviewSessions.filter((session) => ['planned', 'snoozed'].includes(session.status) && session.scheduled_date < todayKey)
@@ -1610,7 +1807,10 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
         ['weekly', 'Weekly review'],
         ['skipped', `Skipped${skippedTopics.length ? ` · ${skippedTopics.length}` : ''}`],
         ['archived', 'Archived'],
-      ] as [Screen, string][]).map(([key, label]) => <button key={key} className={screen === key ? 'selected' : ''} onClick={() => setScreen(key)}>{label}</button>)}
+      ] as [Screen, string][]).map(([key, label]) => <button key={key} className={screen === key ? 'selected' : ''} onClick={() => {
+        setScreen(key)
+        if (key === 'calendar') setCalendarDate(today())
+      }}>{label}</button>)}
     </nav>
 
     {showQuickAdd && <form className="sp-quick-add" onSubmit={(event) => { event.preventDefault(); parseQuickAdd() }}>
@@ -1666,9 +1866,17 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
 
     {screen === 'planner' && <div className="sp-two-column">
       <section className="sp-section">
-        <div className="sp-section-heading"><div><h2>Free-slot suggestions</h2><p>Based on your availability, daily cap, and due topics.</p></div><button className="button" onClick={() => setAvailabilityDialog(true)}><Plus size={14} /> Add study window</button></div>
-        {!availability.length && <div className="sp-inline-hint">Add your weekly free windows first. Sessions are not moved automatically.</div>}
-        {slotSuggestions.length ? <div className="sp-suggestion-list">{slotSuggestions.map((slot) => <article className="sp-suggestion" key={`${slot.topic.id}-${slot.date}-${slot.start}`}><span className="sp-subject-dot" style={{ backgroundColor: subjectFor(slot.topic)?.color }} /><div><strong>{slot.topic.title}</strong><span>{subjectFor(slot.topic)?.name} · {new Intl.DateTimeFormat('en', { weekday: 'short', month: 'short', day: 'numeric' }).format(dateFromKey(slot.date))} · {slot.start}–{slot.end}</span></div><button className="button" onClick={() => void scheduleSlot(slot.topic, slot.date, slot.start)}>Schedule it</button></article>)}</div> : <div className="sp-empty">No free-slot suggestions. Add availability or a repeating/due topic.</div>}
+        <div className="sp-section-heading">
+          <div><h2>Free-slot suggestions</h2><p>Choose an open time this week and add it to your calendar.</p></div>
+          <div className="sp-heading-actions">
+            <button className="button button-primary" onClick={() => { setError(''); setSlotPickerOpen(true) }}><Plus size={14} /> Add study window</button>
+            <button className="button" onClick={() => setAvailabilityDialog(true)}>Set this week's availability</button>
+          </div>
+        </div>
+        {!hasStudyAvailability && <div className="sp-inline-hint">Suggestions use free gaps between 8 AM and 10 PM. Set this week's availability to narrow the windows.</div>}
+        {currentWeekSlotSuggestions.length
+          ? <div className="sp-suggestion-list">{currentWeekSlotSuggestions.slice(0, 4).map((slot) => <article className="sp-suggestion" key={`${slot.date}-${slot.start}`}><div><strong>{new Intl.DateTimeFormat('en', { weekday: 'short', month: 'short', day: 'numeric' }).format(dateFromKey(slot.date))}</strong><span>{slot.start}–{slot.end} · up to {slot.maxDurationMinutes} min</span></div><button className="button" onClick={() => setSelectedStudySlot(slot)}>Choose</button></article>)}</div>
+          : <div className="sp-empty">No free study times remain this week. Adjust availability or existing sessions.</div>}
         <div className="sp-availability-list">{availability.map((window) => <div key={window.id}><span><strong>{weekdayNames[window.weekday]}</strong> {window.start_time.slice(0, 5)}–{window.end_time.slice(0, 5)} · {window.label}</span><button className="icon-button" aria-label={`Remove ${window.label}`} onClick={() => void deleteAvailability(window.id)}><X size={14} /></button></div>)}</div>
       </section>
       <section className="sp-section">
@@ -1677,14 +1885,103 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
       </section>
     </div>}
 
-    {screen === 'calendar' && <section className="sp-section">
-      <div className="sp-section-heading"><div><h2>Next 4 weeks</h2><p>Review sessions are summarized once per day.</p></div></div>
-      <div className="sp-calendar-grid">{monthDays.map((date) => {
-        const daySessions = sessions.filter((session) => session.scheduled_date === date && !['skipped', 'completed'].includes(session.status))
-        const reviewCount = daySessions.filter((session) => session.reason === 'review' || session.reason === 'both').length
-        const studyCount = daySessions.length - reviewCount
-        return <article className={`sp-calendar-day ${date === todayKey ? 'is-today' : ''}`} key={date}><strong>{new Intl.DateTimeFormat('en', { weekday: 'short' }).format(dateFromKey(date))}</strong><span>{new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric' }).format(dateFromKey(date))}</span>{reviewCount > 0 && <span className="sp-calendar-chip">{reviewCount} {reviewCount === 1 ? 'review' : 'reviews'}</span>}{studyCount > 0 && <span className="sp-calendar-chip sp-study-chip">{studyCount} {studyCount === 1 ? 'session' : 'sessions'}</span>}</article>
-      })}</div>
+    {screen === 'calendar' && <section className="sp-section sp-week-view" aria-label="Weekly study calendar">
+      <header className="sp-week-toolbar">
+        <div>
+          <span className="sp-eyebrow">STUDY CALENDAR · LOCAL TIME</span>
+          <h2>{calendarTitle}</h2>
+          <p>Scheduled sessions and availability for this week. Add a study window from Planner to choose a free gap.</p>
+        </div>
+        <div className="sp-week-controls" aria-label="Calendar navigation">
+          <button className="icon-button" aria-label="Previous week" disabled={!canPreviousCalendarWeek} onClick={() => setCalendarDate(dateOffset(calendarDate, -7))}><ArrowLeft size={16} /></button>
+          <button className="button sp-calendar-today" onClick={() => setCalendarDate(todayKey)}>Today</button>
+          <button className="icon-button" aria-label="Next week" disabled={!canNextCalendarWeek} onClick={() => setCalendarDate(dateOffset(calendarDate, 7))}><ArrowRight size={16} /></button>
+        </div>
+      </header>
+      <div className="sp-calendar-legend" aria-label="Calendar legend">
+        <span><i className="sp-legend-session" />Study session</span>
+        <span><i className="sp-legend-availability" />Available window</span>
+      </div>
+      <div className="week-calendar-scroll sp-week-calendar-scroll">
+        <div className="week-calendar sp-week-calendar" style={{ '--hour-height': '48px', '--schedule-hours': 24 } as CSSProperties}>
+          <div className="week-calendar-header">
+            <div className="week-timezone">LOCAL TIME</div>
+            {calendarAgenda.map(({ date, items }) => <div className={`week-day-header ${date === todayKey ? 'today' : ''}`} key={date}>
+              <span>{new Intl.DateTimeFormat('en', { weekday: 'short' }).format(dateFromKey(date))}</span>
+              <strong>{dateFromKey(date).getDate()}</strong>
+              <small>{items.length} {items.length === 1 ? 'session' : 'sessions'}</small>
+            </div>)}
+          </div>
+          <div className="week-all-day">
+            <div className="week-all-day-label">anytime</div>
+            {calendarAgenda.map(({ date, allDayItems }) => <div className={`week-all-day-cell ${date === todayKey ? 'today' : ''}`} key={date}>
+              {allDayItems.map(({ session, topic, subject }) => {
+                const planDetail = topic?.first_step || topic?.goal
+                return <button
+                  type="button"
+                  key={session.id}
+                  className={`week-agenda-task sp-week-event ${session.status === 'completed' ? 'done' : ''}`}
+                  style={{ borderLeftColor: subject?.color ?? '#568467' }}
+                  title={`${subject?.name ?? 'Study'} · ${topic?.title ?? 'Study session'} · Anytime · ${session.duration_minutes} min${planDetail ? ` · ${planDetail}` : ''}`}
+                  onClick={() => setSelectedCalendarSession(session)}
+                >
+                  <span className="week-agenda-task-title sp-week-event-title">
+                    <span className="sp-week-event-name">{topic?.title ?? 'Study session'}</span>
+                    <span className="sp-week-event-time">{session.duration_minutes}m</span>
+                    {session.status === 'completed' && <span className="sp-completion-mark" aria-label="Completed" title="Completed"><Check size={10} /></span>}
+                  </span>
+                  {planDetail && <span className="sp-week-event-detail">{planDetail}</span>}
+                </button>
+              })}
+            </div>)}
+          </div>
+          <div className="week-time-grid">
+            <div className="week-time-labels">{Array.from({ length: 24 }, (_, hour) => <span key={hour}>{clockLabel(hour * 60)}</span>)}</div>
+            {calendarAgenda.map(({ date, timedItems, availability: dayAvailability }) => <div className={`week-time-day ${date === todayKey ? 'today' : ''}`} key={date}>
+              {dayAvailability.map((window) => {
+                const start = getMinutes(window.start_time) ?? 0
+                const end = getMinutes(window.end_time) ?? 0
+                return <div
+                  className="sp-availability-band"
+                  key={window.id}
+                  style={{ top: `${start / 60 * 48}px`, height: `${Math.max(4, (end - start) / 60 * 48)}px` }}
+                  title={`${window.label} · ${clockLabel(start)}–${clockLabel(end)}`}
+                >
+                  <span>{window.label}</span>
+                </div>
+              })}
+              {timedItems.map(({ session, topic, subject, start, lane, laneCount }) => {
+                const duration = Math.min(session.duration_minutes, 1440 - start)
+                const end = start + session.duration_minutes
+                const endText = `${clockLabel(end)}${end >= 1440 ? ' +1 day' : ''}`
+                const planDetail = topic?.first_step || topic?.goal
+                return <button
+                  type="button"
+                  key={session.id}
+                  className={`week-agenda-task sp-week-event ${session.status === 'completed' ? 'done' : ''} ${session.status === 'started' ? 'is-active' : ''} ${laneCount > 1 ? 'is-overlapped' : ''}`}
+                  style={{
+                    top: `${start / 60 * 48}px`,
+                    height: `${Math.max(22, duration / 60 * 48)}px`,
+                    left: `calc(${lane * 100 / laneCount}% + 2px)`,
+                    width: `calc(${100 / laneCount}% - 4px)`,
+                    borderLeftColor: subject?.color ?? '#568467',
+                  }}
+                  title={`${subject?.name ?? 'Study'} · ${topic?.title ?? 'Study session'} · ${clockLabel(start)}–${endText} · ${session.status}${planDetail ? ` · ${planDetail}` : ''}`}
+                  onClick={() => setSelectedCalendarSession(session)}
+                >
+                  <span className="week-agenda-task-title sp-week-event-title">
+                    <span className="sp-week-event-name">{topic?.title ?? 'Study session'}</span>
+                    <span className="sp-week-event-time">{clockLabel(start)}–{endText}</span>
+                    {session.status === 'completed' && <span className="sp-completion-mark" aria-label="Completed" title="Completed"><Check size={10} /></span>}
+                  </span>
+                  {planDetail && <span className="sp-week-event-detail">{planDetail}</span>}
+                </button>
+              })}
+            </div>)}
+          </div>
+        </div>
+      </div>
+      {!hasStudyAvailability && <div className="sp-inline-hint">Free-time suggestions in Planner use 8 AM–10 PM gaps around sessions already on this calendar.</div>}
     </section>}
 
     {screen === 'insights' && <div className="sp-insights">
@@ -1708,14 +2005,44 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
     {screen === 'weekly' && <section className="sp-section">
       <div className="sp-section-heading"><div><h2>Your week, closed out</h2><p>Planned versus done, what slipped, and what to adjust.</p></div><button className="button" onClick={() => setWeeklyReviewOpen(true)}>Open review</button></div>
       <div className="sp-review-summary"><div><strong>{weeklyDone.length}</strong><span>completed</span></div><div><strong>{weeklyReviewSessions.length}</strong><span>planned</span></div><div><strong>{weeklyMissed.length}</strong><span>slipped</span></div><div><strong>{Math.round(completedWeekSessions.reduce((total, item) => total + (item.actual_minutes ?? 0), 0) / 60 * 10) / 10}h</strong><span>focused</span></div></div>
-      <h3>Suggested blocks for next week</h3>
-      {slotSuggestions.slice(0, 5).map((slot) => <article className="sp-suggestion" key={`weekly-${slot.topic.id}-${slot.date}-${slot.start}`}><div><strong>{slot.topic.title}</strong><span>{new Intl.DateTimeFormat('en', { weekday: 'short', month: 'short', day: 'numeric' }).format(dateFromKey(slot.date))} · {slot.start}–{slot.end}</span></div><button className="button" onClick={() => void scheduleSlot(slot.topic, slot.date, slot.start)}>Schedule</button></article>)}
-      {!availability.length && <div className="sp-inline-hint">Set weekly study windows in Planner to get suggested blocks.</div>}
+      <h3>Available study times this week</h3>
+      {currentWeekSlotSuggestions.slice(0, 5).map((slot) => <article className="sp-suggestion" key={`weekly-${slot.date}-${slot.start}`}><div><strong>{new Intl.DateTimeFormat('en', { weekday: 'short', month: 'short', day: 'numeric' }).format(dateFromKey(slot.date))}</strong><span>{slot.start}–{slot.end} · up to {slot.maxDurationMinutes} min</span></div><button className="button" onClick={() => setSelectedStudySlot(slot)}>Choose</button></article>)}
+      {!currentWeekSlotSuggestions.length && <div className="sp-inline-hint">No free windows of 30 minutes or more remain this week.</div>}
     </section>}
 
     {topicDialog && <TopicEditor topic={editingTopic} subjects={subjectOptions} busy={busy} onCancel={() => { setTopicDialog(false); setEditingTopic(null) }} onCreateSubject={() => { setTopicDialog(false); setSubjectDialog(true) }} onSave={saveTopic} />}
     {subjectDialog && <SubjectEditor subject={editingSubject} busy={busy} onCancel={() => { setSubjectDialog(false); setEditingSubject(null) }} onSave={saveSubject} />}
     {availabilityDialog && <AvailabilityEditor onCancel={() => setAvailabilityDialog(false)} onSave={saveAvailability} />}
+    {slotPickerOpen && <StudySlotPicker
+      slots={currentWeekSlotSuggestions}
+      busy={busy}
+      error={error}
+      onCancel={() => setSlotPickerOpen(false)}
+      onAddAvailability={() => { setSlotPickerOpen(false); setAvailabilityDialog(true) }}
+      onSelect={(slot) => { setSlotPickerOpen(false); setSelectedStudySlot(slot) }}
+    />}
+    {selectedStudySlot && <StudySessionEditor
+      slot={selectedStudySlot}
+      subjects={subjectOptions}
+      busy={busy}
+      error={error}
+      onCancel={() => setSelectedStudySlot(null)}
+      onAddSubject={() => { setSelectedStudySlot(null); setSubjectDialog(true) }}
+      onSave={saveNamedStudySession}
+    />}
+    {selectedCalendarSession && <CalendarSessionDialog
+      session={selectedCalendarSession}
+      topic={topics.find((item) => item.id === selectedCalendarSession.topic_id) ?? null}
+      subject={subjects.find((item) => item.id === topics.find((topic) => topic.id === selectedCalendarSession.topic_id)?.subject_id) ?? null}
+      busy={busy}
+      onCancel={() => setSelectedCalendarSession(null)}
+      onEdit={() => {
+        const topic = topics.find((item) => item.id === selectedCalendarSession.topic_id)
+        setSelectedCalendarSession(null)
+        if (topic) openTopic(topic)
+      }}
+      onRemove={removePlannedSession}
+    />}
     {topicToSkip && <SkipDialog topic={topicToSkip} value={skipDate} onChange={setSkipDate} onCancel={() => setTopicToSkip(null)} onSave={() => void skipTopic(topicToSkip, skipDate)} />}
     {closeout && <CloseoutDialog item={closeout} rating={rating} note={reviewNote} busy={busy} onRating={setRating} onNote={setReviewNote} onCancel={() => setCloseout(null)} onSave={finishSession} />}
     {weeklyReviewOpen && <WeeklyReviewDialog done={weeklyDone.length} planned={weeklyReviewSessions.length} missed={weeklyMissed.length} onClose={() => setWeeklyReviewOpen(false)} />}

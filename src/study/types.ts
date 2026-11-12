@@ -77,6 +77,7 @@ export type StudyReview = {
 export type StudyAvailability = {
   id: string
   user_id: string
+  week_start: string
   label: string
   weekday: number
   start_time: string

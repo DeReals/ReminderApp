@@ -242,6 +242,7 @@ export function findFreeSlots(
   maxSlots = 3,
 ) {
   const day = dateFromKey(date).getDay()
+  const weekStart = localDateKey(nextLocalDate(dateFromKey(date), -day))
   const busy = sessions
     .filter((session) => session.scheduled_date === date && session.status !== 'skipped' && session.scheduled_time)
     .map((session) => {
@@ -255,7 +256,7 @@ export function findFreeSlots(
 
   const slots: { date: string; start: string; end: string }[] = []
   for (const window of availability
-    .filter((item) => item.active && item.weekday === day)
+    .filter((item) => item.active && item.week_start === weekStart && item.weekday === day)
     .sort((a, b) => a.start_time.localeCompare(b.start_time))) {
     const startBoundary = getMinutes(window.start_time) ?? 0
     const endBoundary = getMinutes(window.end_time) ?? 0
@@ -271,5 +272,145 @@ export function findFreeSlots(
     }
   }
   return slots
+}
+
+export type AvailableStudySlot = {
+  date: string
+  start: string
+  end: string
+  maxDurationMinutes: number
+}
+
+export function listAvailableStudySlots(
+  dates: string[],
+  availability: StudyAvailability[],
+  sessions: StudySession[],
+  minDurationMinutes = 30,
+  dayStartMinutes = 8 * 60,
+  dayEndMinutes = 22 * 60,
+): AvailableStudySlot[] {
+  const slots: AvailableStudySlot[] = []
+  for (const date of dates) {
+    const weekday = dateFromKey(date).getDay()
+    const weekStart = localDateKey(nextLocalDate(dateFromKey(date), -weekday))
+    const windows = availability
+      .filter((item) => item.active && item.week_start === weekStart && item.weekday === weekday)
+      .map((item) => ({
+        start: Math.max(dayStartMinutes, getMinutes(item.start_time) ?? dayStartMinutes),
+        end: Math.min(dayEndMinutes, getMinutes(item.end_time) ?? dayEndMinutes),
+      }))
+      .filter((window) => window.end > window.start)
+      .sort((a, b) => a.start - b.start)
+    const mergedWindows: { start: number; end: number }[] = []
+    for (const window of windows) {
+      const last = mergedWindows.at(-1)
+      if (last && window.start <= last.end) last.end = Math.max(last.end, window.end)
+      else mergedWindows.push({ ...window })
+    }
+
+    const busy = sessions
+      .filter((session) => session.scheduled_date === date && session.status !== 'skipped' && session.scheduled_time)
+      .map((session) => {
+        const start = getMinutes(session.scheduled_time) ?? dayStartMinutes
+        return { start, end: start + session.duration_minutes }
+      })
+      .sort((a, b) => a.start - b.start)
+
+    for (const window of mergedWindows) {
+      let cursor = window.start
+      for (const interval of busy) {
+        if (interval.end <= cursor) continue
+        if (interval.start >= window.end) break
+        if (interval.start - cursor >= minDurationMinutes) {
+          slots.push({
+            date,
+            start: formatMinutes(cursor),
+            end: formatMinutes(Math.min(interval.start, window.end)),
+            maxDurationMinutes: Math.min(720, Math.min(interval.start, window.end) - cursor),
+          })
+        }
+        cursor = Math.max(cursor, interval.end)
+        if (cursor >= window.end) break
+      }
+      if (window.end - cursor >= minDurationMinutes) {
+        slots.push({
+          date,
+          start: formatMinutes(cursor),
+          end: formatMinutes(window.end),
+          maxDurationMinutes: Math.min(720, window.end - cursor),
+        })
+      }
+    }
+  }
+  return slots
+}
+
+function formatMinutes(minutes: number) {
+  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`
+}
+
+export function suggestStudySlots(
+  topics: StudyTopic[],
+  dates: string[],
+  availability: StudyAvailability[],
+  sessions: StudySession[],
+  dailyCapMinutes: number,
+  maxSuggestions = 8,
+  maxPerDay = Number.POSITIVE_INFINITY,
+) {
+  const suggestions: { topic: StudyTopic; date: string; start: string; end: string }[] = []
+  for (const date of dates) {
+    const weekday = dateFromKey(date).getDay()
+    let suggestionsToday = 0
+    for (const topic of topics) {
+      if (suggestionsToday >= maxPerDay) break
+      if (topic.archived_at || topic.graduated_at) continue
+      if (topic.start_date > date || topic.skip_until && topic.skip_until >= date) continue
+      const topicHasSession = sessions.some((session) =>
+        session.topic_id === topic.id && session.status !== 'skipped')
+      const alreadyScheduled = sessions.some((session) =>
+        session.topic_id === topic.id && session.scheduled_date === date && session.status !== 'skipped')
+      const nextDueDate = topic.next_due_date
+      const reviewAlreadyScheduled = Boolean(nextDueDate && sessions.some((session) =>
+        session.topic_id === topic.id && session.scheduled_date >= nextDueDate && session.status !== 'skipped'))
+      const reviewAlreadySuggested = !topic.repeat_weekdays.length
+        && suggestions.some((item) => item.topic.id === topic.id)
+      const due = topic.spaced_repetition && nextDueDate && nextDueDate <= date
+        && !reviewAlreadyScheduled && !reviewAlreadySuggested
+      const recurring = topic.repeat_weekdays.includes(weekday)
+      const oneOff = !topic.spaced_repetition && !topic.repeat_weekdays.length
+        && !topicHasSession && !suggestions.some((item) => item.topic.id === topic.id)
+      if (alreadyScheduled || (!due && !recurring && !oneOff)) continue
+      const plannedSuggestions = suggestions.map((item) => ({
+        id: `suggested-${item.topic.id}-${item.date}-${item.start}`,
+        user_id: item.topic.user_id,
+        topic_id: item.topic.id,
+        scheduled_date: item.date,
+        scheduled_time: item.start,
+        duration_minutes: item.topic.duration_minutes,
+        reason: 'study' as const,
+        status: 'planned' as const,
+        started_at: null,
+        ended_at: null,
+        actual_minutes: null,
+        snoozed_until: null,
+        created_at: '',
+      }))
+      const slot = findFreeSlots(
+        date,
+        availability,
+        [...sessions, ...plannedSuggestions],
+        topic.duration_minutes,
+        dailyCapMinutes,
+        1,
+      )[0]
+      if (slot) {
+        suggestions.push({ topic, date, start: slot.start, end: slot.end })
+        suggestionsToday += 1
+      }
+      if (suggestions.length >= maxSuggestions) return suggestions
+    }
+  }
+  return suggestions
 }
 
