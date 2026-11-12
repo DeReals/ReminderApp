@@ -1165,6 +1165,8 @@ a { color: inherit; text-decoration: none; }
 .sp-search input { width: 100%; min-width: 0; height: 34px; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 11px; }
 .sp-queue-list, .sp-topic-list, .sp-suggestion-list, .sp-subject-list { display: grid; gap: 8px; }
 .sp-queue-card, .sp-topic-card, .sp-suggestion, .sp-subject-card, .sp-readiness-row { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 12px; border: 1px solid #edf0ec; border-radius: 9px; background: #fff; }
+.sp-subject-card { align-items: center; }
+.sp-subject-edit { flex: 0 0 auto; min-width: 64px; min-height: 32px; padding: 0 10px; border-color: #e1e7e0; border-radius: 7px; color: #526055; font-size: 10px; white-space: nowrap; }
 .sp-queue-card.is-active { border-color: #9dc5a0; box-shadow: inset 3px 0 #5c9363; }
 .sp-subject-dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%; background: #7c9481; }
 .sp-queue-copy, .sp-topic-copy, .sp-subject-card > div, .sp-suggestion > div { display: grid; gap: 4px; min-width: 0; flex: 1; }
@@ -1193,12 +1195,18 @@ a { color: inherit; text-decoration: none; }
 .sp-empty strong { color: #4a594d; font-size: 12px; }
 .sp-empty .button { min-height: 34px; font-size: 10px; }
 .sp-two-column { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, .75fr); gap: 0 15px; align-items: start; }
-.sp-settings-section { grid-column: 1 / -1; }
-.sp-settings-form { display: grid; grid-template-columns: repeat(4, minmax(130px, 1fr)); gap: 10px; }
-.sp-settings-form label, .sp-form label { display: grid; gap: 5px; color: #69756c; font-size: 10px; font-weight: 650; }
-.sp-settings-form input, .sp-form input, .sp-form select { width: 100%; min-width: 0; min-height: 35px; padding: 0 9px; border: 1px solid #e1e7e0; border-radius: 7px; background: #fff; color: #303933; font-size: 11px; }
-.sp-settings-form .button { min-height: 35px; align-self: end; padding: 0 10px; font-size: 10px; }
-.sp-feed-note { display: block; margin-top: 10px; color: #778179; font-size: 10px; }
+.sp-form label { display: grid; gap: 5px; color: #69756c; font-size: 10px; font-weight: 650; }
+.sp-form input, .sp-form select { width: 100%; min-width: 0; min-height: 35px; padding: 0 9px; border: 1px solid #e1e7e0; border-radius: 7px; background: #fff; color: #303933; font-size: 11px; }
+.sp-subject-form { gap: 16px; }
+.sp-subject-identity { display: grid; grid-template-columns: minmax(0, 1fr) 190px; align-items: end; gap: 18px; }
+.sp-subject-color { display: grid; gap: 7px; }
+.sp-subject-color-label { color: #69756c; font-size: 10px; font-weight: 650; }
+.sp-color-options { display: flex; flex-wrap: wrap; gap: 7px; }
+.sp-color-options button { width: 22px; height: 22px; padding: 0; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 0 0 1px #dce3db; cursor: pointer; }
+.sp-color-options button.selected { box-shadow: 0 0 0 2px #3f7047; }
+.sp-color-options button:focus-visible { outline: 2px solid #8eb995; outline-offset: 3px; }
+.sp-subject-fields { padding: 13px; background: #fafbf9; }
+.sp-subject-fields legend { color: #526055; font-size: 10px; font-weight: 750; }
 .sp-availability-list { display: grid; gap: 6px; margin-top: 12px; }
 .sp-availability-list > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 9px; border-radius: 7px; background: #f6f8f5; color: #657067; font-size: 10px; }
 .sp-calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 7px; }
@@ -1257,8 +1265,6 @@ a { color: inherit; text-decoration: none; }
 .study-planner :focus-visible { outline: 3px solid #8eb995; outline-offset: 3px; }
 @media (max-width: 850px) {
   .sp-two-column { grid-template-columns: 1fr; }
-  .sp-settings-section { grid-column: auto; }
-  .sp-settings-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sp-insights { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 600px) {
@@ -1278,7 +1284,7 @@ a { color: inherit; text-decoration: none; }
   .sp-topic-meta { width: 100%; grid-template-columns: repeat(2, 1fr); text-align: left; }
   .sp-calendar-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .sp-calendar-day { min-height: 75px; }
-  .sp-settings-form { grid-template-columns: 1fr 1fr; }
+  .sp-subject-identity { grid-template-columns: 1fr; gap: 13px; }
   .sp-review-summary { grid-template-columns: repeat(2, 1fr); }
   .sp-insights { grid-template-columns: 1fr 1fr; }
   .sp-progress-row { grid-template-columns: 80px minmax(30px, 1fr) 70px; gap: 6px; font-size: 8px; }

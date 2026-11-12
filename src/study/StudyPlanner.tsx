@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import { supabaseUrl } from '../lib/supabase'
 
 function Modal({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
   const modalRef = useRef<HTMLElement | null>(null)
@@ -144,15 +143,28 @@ function SubjectEditor({ subject, busy, onCancel, onSave }: {
   }
 
   return <Modal title={subject ? 'Edit subject' : 'Add subject'} onClose={onCancel}>
-    <form className="sp-form" onSubmit={(event) => void submit(event)}>
-      <label>Subject name<input autoFocus required value={name} onChange={(event) => setName(event.target.value)} placeholder="Calculus II" /></label>
-      <label>Color<select value={color} onChange={(event) => setColor(event.target.value)}>{subjectColors.map((value, index) => <option value={value} key={value}>{['Forest', 'Blue', 'Violet', 'Clay', 'Rose', 'Sage', 'Gold'][index]}</option>)}</select></label>
-      <div className="sp-form-grid">
-        <label>Weekly target (hours)<input type="number" min="0" max="168" step="0.5" value={targetHours} onChange={(event) => setTargetHours(Number(event.target.value))} /></label>
-        <label>Default duration (minutes)<input type="number" min="5" max="720" step="5" value={duration} onChange={(event) => setDuration(Number(event.target.value))} /></label>
-        <label>Exam date<input type="date" value={examDate} onChange={(event) => setExamDate(event.target.value)} /></label>
-        <label>Semester end<input type="date" value={semesterEnd} onChange={(event) => setSemesterEnd(event.target.value)} /></label>
+    <form className="sp-form sp-subject-form" onSubmit={(event) => void submit(event)}>
+      <div className="sp-subject-identity">
+        <label>Subject name<input autoFocus required value={name} onChange={(event) => setName(event.target.value)} placeholder="Calculus II" /></label>
+        <div className="sp-subject-color">
+          <span className="sp-subject-color-label">Subject color</span>
+          <div className="sp-color-options" role="group" aria-label="Subject color">
+            {subjectColors.map((value, index) => {
+              const label = ['Forest', 'Blue', 'Violet', 'Clay', 'Rose', 'Sage', 'Gold'][index] ?? 'Subject'
+              return <button type="button" key={value} className={color === value ? 'selected' : ''} style={{ backgroundColor: value }} aria-label={label} aria-pressed={color === value} onClick={() => setColor(value)} />
+            })}
+          </div>
+        </div>
       </div>
+      <fieldset className="sp-subject-fields">
+        <legend>Study plan</legend>
+        <div className="sp-form-grid">
+          <label>Weekly target (hours)<input type="number" min="0" max="168" step="0.5" value={targetHours} onChange={(event) => setTargetHours(Number(event.target.value))} /></label>
+          <label>Default session (minutes)<input type="number" min="5" max="720" step="5" value={duration} onChange={(event) => setDuration(Number(event.target.value))} /></label>
+          <label>Exam date<input type="date" value={examDate} onChange={(event) => setExamDate(event.target.value)} /></label>
+          <label>Semester end<input type="date" value={semesterEnd} onChange={(event) => setSemesterEnd(event.target.value)} /></label>
+        </div>
+      </fieldset>
       <div className="sp-modal-actions"><button className="button" type="button" onClick={onCancel}>Cancel</button><button className="button button-primary" disabled={busy || !name.trim()} type="submit">{busy ? 'Saving…' : 'Save subject'}</button></div>
     </form>
   </Modal>
@@ -227,7 +239,7 @@ function WeeklyReviewDialog({ done, planned, missed, onClose }: {
 }
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { ArrowRight, BookOpen, CalendarDays, Check, MoreHorizontal, Play, Plus, Search, Sparkles, X } from 'lucide-react'
+import { ArrowRight, BookOpen, Check, MoreHorizontal, Play, Plus, Search, Sparkles, X } from 'lucide-react'
 import { enqueueOfflineAction, readOfflineActions, readPlannerSnapshot, savePlannerSnapshot, syncOfflineActions } from './offline'
 import {
   buildTodayQueue,
@@ -637,7 +649,6 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
   const [reviews, setReviews] = useState<StudyReview[]>([])
   const [availability, setAvailability] = useState<StudyAvailability[]>([])
   const [preferences, setPreferences] = useState<StudyPreferences>(() => defaultPreferences(userId))
-  const [feedToken, setFeedToken] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -659,10 +670,10 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
   const [showQuickAdd, setShowQuickAdd] = useState(false)
   const [quickText, setQuickText] = useState('')
   const [weeklyReviewOpen, setWeeklyReviewOpen] = useState(false)
-  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | 'unsupported'>(() =>
-    typeof Notification === 'undefined' ? 'unsupported' : Notification.permission)
+  const notificationPermission: NotificationPermission | 'unsupported' =
+    typeof Notification === 'undefined' ? 'unsupported' : Notification.permission
   const todayKey = today()
-  const throughDate = dateOffset(todayKey, 90)
+  const throughDate = dateOffset(todayKey, 40)
 
   function applyPendingActions(snapshot: {
     subjects: StudySubject[]
@@ -691,14 +702,13 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
   async function load() {
     setLoading(true)
     setError('')
-    const [subjectsResult, topicsResult, preferencesResult, availabilityResult, tokenResult] = await Promise.all([
+    const [subjectsResult, topicsResult, preferencesResult, availabilityResult] = await Promise.all([
       client.from('study_subjects').select('*').eq('user_id', userId).order('name'),
       client.from('study_topics').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
       client.from('study_preferences').select('*').eq('user_id', userId).maybeSingle(),
       client.from('study_availability').select('*').eq('user_id', userId).order('weekday').order('start_time'),
-      client.from('study_feed_tokens').select('token').eq('user_id', userId).maybeSingle(),
     ])
-    const initialError = subjectsResult.error || topicsResult.error || preferencesResult.error || availabilityResult.error || tokenResult.error
+    const initialError = subjectsResult.error || topicsResult.error || preferencesResult.error || availabilityResult.error
     if (initialError) {
       try {
         const cached = readPlannerSnapshot(userId)
@@ -809,7 +819,6 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
     setReviews(snapshot.reviews)
     setAvailability(snapshot.availability)
     setPreferences(snapshot.preferences)
-    setFeedToken(tokenResult.data?.token ?? null)
     try { savePlannerSnapshot(userId, snapshot) } catch (cacheError) {
       console.error('Could not cache the study planner:', cacheError)
     }
@@ -994,7 +1003,7 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
   const overdueCount = todayQueue.filter((item) => item.bucket === 'overdue').length
   const dueCount = todayQueue.filter((item) => item.bucket === 'due').length
   const upcomingSessions = sessions.filter((session) =>
-    session.scheduled_date > todayKey && !['completed', 'skipped'].includes(session.status))
+    session.scheduled_date > todayKey && session.scheduled_date <= throughDate && !['completed', 'skipped'].includes(session.status))
   const skippedTopics = topics.filter((topic) => !topic.archived_at && !topic.graduated_at && topic.skip_until && topic.skip_until >= todayKey)
   const overdueSessions = todayQueue.filter((item) => item.bucket === 'overdue')
   const weekStart = dateOffset(todayKey, -new Date().getDay())
@@ -1017,21 +1026,6 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
     setNotice(message)
     setError('')
     window.setTimeout(() => setNotice(''), 3500)
-  }
-
-  async function enableBrowserNotifications() {
-    if (typeof Notification === 'undefined') {
-      setErrorMessage('This browser does not support notifications.')
-      return
-    }
-    try {
-      const permission = await Notification.requestPermission()
-      setNotificationPermission(permission)
-      if (permission === 'granted') setNoticeMessage('Browser notifications enabled.')
-      else if (permission === 'denied') setErrorMessage('Notifications are blocked in your browser settings.')
-    } catch (permissionError) {
-      setErrorMessage(`Could not request notification permission: ${permissionError instanceof Error ? permissionError.message : String(permissionError)}`)
-    }
   }
 
   async function saveSubject(draft: SubjectDraft) {
@@ -1352,48 +1346,6 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
     else setAvailability((current) => current.filter((item) => item.id !== id))
   }
 
-  async function savePreferences(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const form = new FormData(event.currentTarget)
-    const next = {
-      ...preferences,
-      daily_cap_minutes: Number(form.get('daily_cap_minutes')),
-      lead_minutes: Number(form.get('lead_minutes')),
-      quiet_start: String(form.get('quiet_start') || '') || null,
-      quiet_end: String(form.get('quiet_end') || '') || null,
-      digest_time: String(form.get('digest_time') || '') || null,
-      max_notifications_per_day: Number(form.get('max_notifications_per_day')),
-      catch_up_threshold: Number(form.get('catch_up_threshold')),
-      email: String(form.get('email') || '').trim() || null,
-    }
-    const { error: updateError } = await client.from('study_preferences').upsert(next)
-    if (updateError) setErrorMessage(`Could not save study settings: ${updateError.message}`)
-    else {
-      setPreferences(next)
-      setNoticeMessage('Study settings saved.')
-    }
-  }
-
-  async function ensureFeed() {
-    if (!supabaseUrl) {
-      setErrorMessage('Could not create a private calendar link: Supabase URL is not configured.')
-      return
-    }
-    const { data, error: tokenError } = await client.from('study_feed_tokens')
-      .upsert({ user_id: userId }).select('token').single()
-    if (tokenError) setErrorMessage(`Could not create a private calendar link: ${tokenError.message}`)
-    else {
-      setFeedToken(data.token as string)
-      const url = `${supabaseUrl}/functions/v1/study-feed/${data.token}`
-      try {
-        await navigator.clipboard.writeText(url)
-        setNoticeMessage('Private calendar feed link copied.')
-      } catch (clipboardError) {
-        setErrorMessage(`Could not copy the feed link. Copy it manually: ${url} (${clipboardError instanceof Error ? clipboardError.message : String(clipboardError)})`)
-      }
-    }
-  }
-
   function parseQuickAdd() {
     const input = quickText.trim()
     if (!input) return
@@ -1693,7 +1645,7 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
     </>}
 
     {screen === 'upcoming' && <section className="sp-section">
-      <div className="sp-section-heading"><div><h2>Upcoming sessions</h2><p>Due later, grouped in date order.</p></div><label className="sp-search"><Search size={15} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Filter by topic or subject" /></label></div>
+      <div className="sp-section-heading"><div><h2>Upcoming sessions</h2><p>Next 40 days, grouped in date order.</p></div><label className="sp-search"><Search size={15} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Filter by topic or subject" /></label></div>
       {upcomingSessions.length ? <div className="sp-queue-list">{upcomingSessions.filter((session) => {
         const topic = topics.find((item) => item.id === session.topic_id)
         const subject = topic && subjectFor(topic)
@@ -1721,24 +1673,7 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
       </section>
       <section className="sp-section">
         <div className="sp-section-heading"><div><h2>Subjects</h2><p>Targets, default session length, and exam dates.</p></div><button className="button" onClick={() => { setEditingSubject(null); setSubjectDialog(true) }}><Plus size={14} /> Add subject</button></div>
-        {subjectOptions.length ? <div className="sp-subject-list">{subjectOptions.map((subject) => <article key={subject.id} className="sp-subject-card"><span className="sp-subject-dot" style={{ backgroundColor: subject.color }} /><div><strong>{subject.name}</strong><span>{Math.round(subject.weekly_target_minutes / 60)}h target / week · {subject.default_duration_minutes} min default</span>{subject.exam_date && <small>Exam {new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric' }).format(dateFromKey(subject.exam_date))}</small>}</div><button className="icon-button" aria-label={`Edit ${subject.name}`} onClick={() => { setEditingSubject(subject); setSubjectDialog(true) }}>Edit</button></article>)}</div> : <div className="sp-empty">Create a subject before adding topics.</div>}
-      </section>
-      <section className="sp-section sp-settings-section">
-        <div className="sp-section-heading"><div><h2>Notifications and calendar</h2><p>Digest, quiet hours, delivery cap, and private calendar feed.</p></div></div>
-        <form className="sp-settings-form" onSubmit={(event) => void savePreferences(event)}>
-          <label>Lead time (minutes)<input type="number" name="lead_minutes" min="0" max="1440" defaultValue={preferences.lead_minutes} /></label>
-          <label>Daily notification cap<input type="number" name="max_notifications_per_day" min="1" max="20" defaultValue={preferences.max_notifications_per_day} /></label>
-          <label>Daily study cap (minutes)<input type="number" name="daily_cap_minutes" min="15" max="1440" defaultValue={preferences.daily_cap_minutes} /></label>
-          <label>Catch-up threshold<input type="number" name="catch_up_threshold" min="1" max="100" defaultValue={preferences.catch_up_threshold} /></label>
-          <label>Quiet hours start<input type="time" name="quiet_start" defaultValue={preferences.quiet_start ?? ''} /></label>
-          <label>Quiet hours end<input type="time" name="quiet_end" defaultValue={preferences.quiet_end ?? ''} /></label>
-          <label>Morning digest<input type="time" name="digest_time" defaultValue={preferences.digest_time ?? ''} /></label>
-          <label>Email fallback<input type="email" name="email" placeholder="you@example.com" defaultValue={preferences.email ?? ''} /></label>
-          <button className="button button-primary" type="submit">Save settings</button>
-          {notificationPermission !== 'granted' && <button className="button" type="button" disabled={notificationPermission === 'unsupported'} onClick={() => void enableBrowserNotifications()}>{notificationPermission === 'denied' ? 'Notifications blocked' : notificationPermission === 'unsupported' ? 'Notifications unavailable' : 'Enable browser notifications'}</button>}
-          <button className="button" type="button" onClick={() => void ensureFeed()}><CalendarDays size={14} />{feedToken ? 'Copy private calendar link' : 'Create private calendar link'}</button>
-        </form>
-        {feedToken && <small className="sp-feed-note">This private link is a bearer credential. Keep it secret; regenerate it if shared accidentally.</small>}
+        {subjectOptions.length ? <div className="sp-subject-list">{subjectOptions.map((subject) => <article key={subject.id} className="sp-subject-card"><span className="sp-subject-dot" style={{ backgroundColor: subject.color }} /><div><strong>{subject.name}</strong><span>{Math.round(subject.weekly_target_minutes / 60)}h target / week · {subject.default_duration_minutes} min default</span>{subject.exam_date && <small>Exam {new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric' }).format(dateFromKey(subject.exam_date))}</small>}</div><button className="button sp-subject-edit" aria-label={`Edit ${subject.name}`} onClick={() => { setEditingSubject(subject); setSubjectDialog(true) }}>Edit</button></article>)}</div> : <div className="sp-empty">Create a subject before adding topics.</div>}
       </section>
     </div>}
 
