@@ -1295,6 +1295,7 @@ a { color: inherit; text-decoration: none; }
 .sp-rating-options button.selected { border-color: #93b997; background: #eef6ee; color: #3f7047; }
 .sp-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 5px; }
 .sp-modal-actions .button { min-height: 35px; padding: 0 12px; font-size: 10px; }
+.sp-topic-delete-action { margin-right: auto; }
 .sp-slot-picker { display: grid; gap: 12px; }
 .sp-slot-picker > p { margin: 0; color: #707b72; font-size: 11px; line-height: 1.5; }
 .sp-slot-picker-list { display: grid; gap: 7px; max-height: min(56vh, 480px); overflow-y: auto; padding: 2px; }

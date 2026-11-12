@@ -49,13 +49,14 @@ function Modal({ title, children, onClose }: { title: string; children: ReactNod
   </div>
 }
 
-function TopicEditor({ topic, subjects, busy, onCancel, onCreateSubject, onSave }: {
+function TopicEditor({ topic, subjects, busy, onCancel, onCreateSubject, onSave, onDelete }: {
   topic: StudyTopic | null
   subjects: StudySubject[]
   busy: boolean
   onCancel: () => void
   onCreateSubject: () => void
   onSave: (draft: TopicDraft) => Promise<boolean>
+  onDelete: (topic: StudyTopic) => void
 }) {
   const [title, setTitle] = useState(topic?.title ?? '')
   const [subjectId, setSubjectId] = useState(topic?.subject_id ?? subjects[0]?.id ?? '')
@@ -111,8 +112,34 @@ function TopicEditor({ topic, subjects, busy, onCancel, onCreateSubject, onSave 
         <label>Session goal<input value={goal} onChange={(event) => setGoal(event.target.value)} placeholder="Problems 1–10" /></label>
         <label>Start with<input value={firstStep} onChange={(event) => setFirstStep(event.target.value)} placeholder="Open the chapter 5 worksheet" /></label>
         <label>Materials link<input type="url" value={materialsUrl} onChange={(event) => setMaterialsUrl(event.target.value)} placeholder="https://" /></label>
-        <div className="sp-modal-actions"><button className="button" type="button" onClick={onCancel}>Cancel</button><button className="button button-primary" disabled={busy || !title.trim()} type="submit">{busy ? 'Saving…' : topic?.id ? 'Save changes' : 'Add topic'}</button></div>
+        {topic && <p className="sp-field-hint">Changes update all upcoming repetitions. Completed sessions stay in your history.</p>}
+        <div className="sp-modal-actions">
+          {topic && <button className="button sp-remove-session sp-topic-delete-action" type="button" onClick={() => onDelete(topic)} disabled={busy}>Delete study plan</button>}
+          <button className="button" type="button" onClick={onCancel}>Cancel</button>
+          <button className="button button-primary" disabled={busy || !title.trim()} type="submit">{busy ? 'Saving…' : topic?.id ? 'Save changes' : 'Add topic'}</button>
+        </div>
       </form>}
+  </Modal>
+}
+
+function DeleteStudyPlanDialog({ topic, busy, error, onCancel, onConfirm }: {
+  topic: StudyTopic
+  busy: boolean
+  error: string
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  const repeats = topic.repeat_weekdays.length > 0 || topic.spaced_repetition
+  return <Modal title="Delete study plan?" onClose={onCancel}>
+    <div className="sp-form">
+      <p><strong>{topic.title}</strong>{repeats ? ' and all its uncompleted repetitions, including overdue or snoozed sessions, will be removed.' : ' and its uncompleted session will be removed.'}</p>
+      <p className="sp-field-hint">Completed sessions and review history are kept. The plan is archived so you can restore it later.</p>
+      {error && <div className="sp-alert sp-error" role="alert">{error}</div>}
+      <div className="sp-modal-actions">
+        <button className="button" type="button" onClick={onCancel} disabled={busy}>Cancel</button>
+        <button className="button sp-remove-session" type="button" onClick={onConfirm} disabled={busy}>{busy ? 'Deleting…' : 'Delete plan'}</button>
+      </div>
+    </div>
   </Modal>
 }
 
@@ -305,16 +332,19 @@ function WeeklyReviewDialog({ done, planned, missed, onClose }: {
   </Modal>
 }
 
-function CalendarSessionDialog({ session, topic, subject, busy, onCancel, onEdit, onRemove }: {
+function CalendarSessionDialog({ session, topic, subject, busy, error, onCancel, onEdit, onRemove }: {
   session: StudySession
   topic: StudyTopic | null
   subject: StudySubject | null
   busy: boolean
+  error: string
   onCancel: () => void
   onEdit: () => void
-  onRemove: (session: StudySession) => Promise<boolean>
+  onRemove: (session: StudySession, scope: 'occurrence' | 'series') => Promise<boolean>
 }) {
+  const [choosingRemovalScope, setChoosingRemovalScope] = useState(false)
   const canRemove = ['planned', 'snoozed'].includes(session.status)
+  const hasRepetitions = Boolean(topic && (topic.repeat_weekdays.length > 0 || topic.spaced_repetition))
   return <Modal title="Study session" onClose={onCancel}>
     <div className="sp-form">
       <div className="sp-session-slot-summary">
@@ -324,12 +354,22 @@ function CalendarSessionDialog({ session, topic, subject, busy, onCancel, onEdit
         {topic?.goal && <span className="sp-calendar-plan-detail">Goal: {topic.goal}</span>}
         {topic?.first_step && <span className="sp-calendar-plan-detail">Start with: {topic.first_step}</span>}
       </div>
-      {canRemove && <p className="sp-field-hint">Removing this occurrence won’t change the recurring study plan.</p>}
-      <div className="sp-modal-actions">
-        <button className="button" type="button" onClick={onCancel} disabled={busy}>Close</button>
-        {topic && <button className="button" type="button" onClick={onEdit} disabled={busy}>Edit study plan</button>}
-        {canRemove && <button className="button sp-remove-session" type="button" onClick={() => void onRemove(session)} disabled={busy}><Trash2 size={13} /> Remove from calendar</button>}
-      </div>
+      {error && <div className="sp-alert sp-error" role="alert">{error}</div>}
+      {canRemove && choosingRemovalScope
+        ? <>
+            <p className="sp-field-hint">{hasRepetitions ? 'Remove only this session, or remove all uncompleted occurrences and stop future repetitions?' : 'Remove this session from the calendar?'}</p>
+            {hasRepetitions && <p className="sp-field-hint">Completed sessions stay in history. Removing all occurrences archives the plan; you can restore it later.</p>}
+            <div className="sp-modal-actions">
+              <button className="button" type="button" onClick={() => setChoosingRemovalScope(false)} disabled={busy}>Cancel</button>
+              <button className="button sp-remove-session" type="button" onClick={() => void onRemove(session, 'occurrence')} disabled={busy}>Just this occurrence</button>
+              {hasRepetitions && <button className="button sp-remove-session" type="button" onClick={() => void onRemove(session, 'series')} disabled={busy}>All occurrences</button>}
+            </div>
+          </>
+        : <div className="sp-modal-actions">
+            <button className="button" type="button" onClick={onCancel} disabled={busy}>Close</button>
+            {topic && <button className="button" type="button" onClick={onEdit} disabled={busy}>Edit study plan</button>}
+            {canRemove && <button className="button sp-remove-session" type="button" onClick={() => { setChoosingRemovalScope(true) }} disabled={busy}><Trash2 size={13} /> Remove from calendar</button>}
+          </div>}
     </div>
   </Modal>
 }
@@ -762,6 +802,7 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
   const [topicDialog, setTopicDialog] = useState(false)
   const [subjectDialog, setSubjectDialog] = useState(false)
   const [editingTopic, setEditingTopic] = useState<StudyTopic | null>(null)
+  const [topicToDelete, setTopicToDelete] = useState<StudyTopic | null>(null)
   const [editingSubject, setEditingSubject] = useState<StudySubject | null>(null)
   const [closeout, setCloseout] = useState<QueuedStudySession | null>(null)
   const [selectedCalendarSession, setSelectedCalendarSession] = useState<StudySession | null>(null)
@@ -1158,6 +1199,23 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
   async function saveTopic(draft: TopicDraft) {
     const isEditing = Boolean(editingTopic?.id)
     setBusy(true)
+    if (isEditing && editingTopic) {
+      const { error: sessionError } = await client.from('study_sessions').delete()
+        .eq('topic_id', editingTopic.id)
+        .eq('user_id', userId)
+        .gte('scheduled_date', todayKey)
+        .in('status', ['planned', 'snoozed'])
+      if (sessionError) {
+        setBusy(false)
+        setErrorMessage(`Could not update upcoming repetitions: ${sessionError.message}`)
+        void load()
+        return false
+      }
+      setSessions((current) => current.filter((session) =>
+        !(session.topic_id === editingTopic.id
+          && session.scheduled_date >= todayKey
+          && ['planned', 'snoozed'].includes(session.status))))
+    }
     const result = isEditing && editingTopic
       ? await client.from('study_topics').update(draft).eq('id', editingTopic.id).eq('user_id', userId).select().single()
       : await client.from('study_topics').insert({
@@ -1168,6 +1226,7 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
     setBusy(false)
     if (result.error) {
       setErrorMessage(`Could not save topic: ${result.error.message}`)
+      if (isEditing) void load()
       return false
     }
     setTopicDialog(false)
@@ -1194,8 +1253,16 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
     return true
   }
 
-  async function removePlannedSession(session: StudySession): Promise<boolean> {
+  async function removePlannedSession(session: StudySession, scope: 'occurrence' | 'series'): Promise<boolean> {
     if (!['planned', 'snoozed'].includes(session.status)) return false
+    if (scope === 'series') {
+      const topic = topics.find((item) => item.id === session.topic_id)
+      if (!topic) {
+        setErrorMessage('Could not find the study plan for this occurrence.')
+        return false
+      }
+      return deleteStudyPlan(topic)
+    }
     setBusy(true)
     const removed = await updateSession(session, { status: 'skipped' })
     setBusy(false)
@@ -1416,6 +1483,45 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
       setTopics((current) => current.map((item) => item.id === topic.id ? { ...item, archived_at: new Date().toISOString() } : item))
       setNoticeMessage('Topic archived.')
     }
+  }
+
+  async function deleteStudyPlan(topic: StudyTopic): Promise<boolean> {
+    if (sessions.some((session) => session.topic_id === topic.id && session.status === 'started')) {
+      setErrorMessage('Finish the active session before deleting this study plan.')
+      return false
+    }
+
+    setBusy(true)
+    const { error: sessionError } = await client.from('study_sessions').delete()
+      .eq('topic_id', topic.id)
+      .eq('user_id', userId)
+      .in('status', ['planned', 'snoozed', 'skipped'])
+    if (sessionError) {
+      setBusy(false)
+      setErrorMessage(`Could not remove the plan's repetitions: ${sessionError.message}`)
+      return false
+    }
+    setSessions((current) => current.filter((session) =>
+      session.topic_id !== topic.id || !['planned', 'snoozed', 'skipped'].includes(session.status)))
+
+    const archivedAt = new Date().toISOString()
+    const { error: archiveError } = await client.from('study_topics').update({ archived_at: archivedAt })
+      .eq('id', topic.id).eq('user_id', userId)
+    setBusy(false)
+    if (archiveError) {
+      setErrorMessage(`Upcoming sessions were removed, but the study plan could not be archived: ${archiveError.message}`)
+      void load()
+      return false
+    }
+
+    setTopics((current) => current.map((item) => item.id === topic.id ? { ...item, archived_at: archivedAt } : item))
+    setTopicDialog(false)
+    setEditingTopic(null)
+    setTopicToDelete(null)
+    setSelectedCalendarSession(null)
+    setNoticeMessage('Study plan deleted. Completed history was kept.')
+    void load()
+    return true
   }
 
   async function restoreTopic(topic: StudyTopic) {
@@ -1923,7 +2029,7 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
                   className={`week-agenda-task sp-week-event ${session.status === 'completed' ? 'done' : ''}`}
                   style={{ borderLeftColor: subject?.color ?? '#568467' }}
                   title={`${subject?.name ?? 'Study'} · ${topic?.title ?? 'Study session'} · Anytime · ${session.duration_minutes} min${planDetail ? ` · ${planDetail}` : ''}`}
-                  onClick={() => setSelectedCalendarSession(session)}
+                  onClick={() => { setError(''); setSelectedCalendarSession(session) }}
                 >
                   <span className="week-agenda-task-title sp-week-event-title">
                     <span className="sp-week-event-name">{topic?.title ?? 'Study session'}</span>
@@ -1967,7 +2073,7 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
                     borderLeftColor: subject?.color ?? '#568467',
                   }}
                   title={`${subject?.name ?? 'Study'} · ${topic?.title ?? 'Study session'} · ${clockLabel(start)}–${endText} · ${session.status}${planDetail ? ` · ${planDetail}` : ''}`}
-                  onClick={() => setSelectedCalendarSession(session)}
+                  onClick={() => { setError(''); setSelectedCalendarSession(session) }}
                 >
                   <span className="week-agenda-task-title sp-week-event-title">
                     <span className="sp-week-event-name">{topic?.title ?? 'Study session'}</span>
@@ -2010,7 +2116,22 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
       {!currentWeekSlotSuggestions.length && <div className="sp-inline-hint">No free windows of 30 minutes or more remain this week.</div>}
     </section>}
 
-    {topicDialog && <TopicEditor topic={editingTopic} subjects={subjectOptions} busy={busy} onCancel={() => { setTopicDialog(false); setEditingTopic(null) }} onCreateSubject={() => { setTopicDialog(false); setSubjectDialog(true) }} onSave={saveTopic} />}
+    {topicDialog && <TopicEditor
+      topic={editingTopic}
+      subjects={subjectOptions}
+      busy={busy}
+      onCancel={() => { setTopicDialog(false); setEditingTopic(null) }}
+      onCreateSubject={() => { setTopicDialog(false); setSubjectDialog(true) }}
+      onSave={saveTopic}
+      onDelete={(topic) => { setError(''); setTopicToDelete(topic) }}
+    />}
+    {topicToDelete && <DeleteStudyPlanDialog
+      topic={topicToDelete}
+      busy={busy}
+      error={error}
+      onCancel={() => { setTopicToDelete(null); setError('') }}
+      onConfirm={() => void deleteStudyPlan(topicToDelete)}
+    />}
     {subjectDialog && <SubjectEditor subject={editingSubject} busy={busy} onCancel={() => { setSubjectDialog(false); setEditingSubject(null) }} onSave={saveSubject} />}
     {availabilityDialog && <AvailabilityEditor onCancel={() => setAvailabilityDialog(false)} onSave={saveAvailability} />}
     {slotPickerOpen && <StudySlotPicker
@@ -2035,6 +2156,7 @@ export function StudyPlanner({ client, userId, initialScreen = 'today' }: Props)
       topic={topics.find((item) => item.id === selectedCalendarSession.topic_id) ?? null}
       subject={subjects.find((item) => item.id === topics.find((topic) => topic.id === selectedCalendarSession.topic_id)?.subject_id) ?? null}
       busy={busy}
+      error={error}
       onCancel={() => setSelectedCalendarSession(null)}
       onEdit={() => {
         const topic = topics.find((item) => item.id === selectedCalendarSession.topic_id)
